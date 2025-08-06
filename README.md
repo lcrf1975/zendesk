@@ -1,2 +1,2 @@
-# zendesk
+# Zendesk
 Zendesk API Scripts
