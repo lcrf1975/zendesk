@@ -4,15 +4,17 @@ Zendesk Dynamic Content Manager
 A PyQt6 desktop application for managing Zendesk Dynamic Content
 with automated translation capabilities.
 
-Version: 41.0 (Final Bug Fixes)
+Version: 42.0 (Bug Fixes & Enhancements)
 
-Changes from v40:
-- CRITICAL: Added missing handle_rate_limit_simple() method
-- Added thread-safe access to _locale_id_map
-- Removed unused imports
-- Added null check for object IDs
-- perform_translation now returns statistics
-- Improved futures cancellation handling
+Changes from v41:
+- FIX: Sidebar buttons no longer steal focus from checkboxes
+- FIX: Table/data index mismatch validation in run_apply
+- FIX: Translation loss prevention on force retranslate failure
+- FIX: JSON error handling in pagination
+- FIX: Safer cleanup with timeout
+- FIX: Improved closeEvent with shorter timeouts
+- ENHANCEMENT: Added read-only work items access for performance
+- ENHANCEMENT: Better error messages throughout
 """
 
 import sys
@@ -34,7 +36,7 @@ import logging
 import copy
 import weakref
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
 from enum import Enum, auto
@@ -194,7 +196,7 @@ class UIConfig:
     """UI-specific configuration."""
     
     WORKER_STOP_TIMEOUT_MS: int = 3000
-    WORKER_STOP_INTERVALS: Tuple[int, ...] = (1000, 2000, 3000, 5000)
+    WORKER_STOP_INTERVALS: Tuple[int, ...] = (500, 1000, 2000)
     LOG_INTERVAL: int = 100
     STATUS_UPDATE_INTERVAL_SEC: float = 10.0
     SIDEBAR_WIDTH: int = 200
@@ -376,9 +378,13 @@ def get_monospace_font_family() -> str:
     if sys.platform == 'darwin':
         preferred_fonts = ['SF Mono', 'Menlo', 'Monaco', 'Courier New']
     elif sys.platform == 'win32':
-        preferred_fonts = ['Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New']
+        preferred_fonts = [
+            'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New'
+        ]
     else:
-        preferred_fonts = ['Ubuntu Mono', 'DejaVu Sans Mono', 'Liberation Mono', 'Courier New']
+        preferred_fonts = [
+            'Ubuntu Mono', 'DejaVu Sans Mono', 'Liberation Mono', 'Courier New'
+        ]
 
     available_fonts = set(QFontDatabase.families())
     for font in preferred_fonts:
@@ -1138,7 +1144,8 @@ def parse_zendesk_error(response: requests.Response) -> ZendeskAPIError:
             errors = data['errors']
             if isinstance(errors, list):
                 error_msgs = [
-                    err.get('message', str(err)) if isinstance(err, dict) else str(err)
+                    err.get('message', str(err)) if isinstance(err, dict)
+                    else str(err)
                     for err in errors
                 ]
                 if error_msgs:
@@ -1333,7 +1340,9 @@ class AcronymProtector:
             return acronym_map["__SKIP__"]
 
         result = translated_text
-        sorted_items = sorted(acronym_map.items(), key=lambda x: len(x[0]), reverse=True)
+        sorted_items = sorted(
+            acronym_map.items(), key=lambda x: len(x[0]), reverse=True
+        )
         for placeholder, acronym in sorted_items:
             if placeholder in result:
                 result = result.replace(placeholder, acronym)
@@ -1342,7 +1351,9 @@ class AcronymProtector:
             if pattern.search(result):
                 result = pattern.sub(acronym, result)
                 continue
-            result = AcronymProtector._restore_corrupted(result, placeholder, acronym)
+            result = AcronymProtector._restore_corrupted(
+                result, placeholder, acronym
+            )
         return result
 
     @staticmethod
@@ -1403,7 +1414,9 @@ class AcronymProtector:
                     placeholder = ph
                     break
             if placeholder:
-                fixed = AcronymProtector._restore_corrupted(fixed, placeholder, acronym)
+                fixed = AcronymProtector._restore_corrupted(
+                    fixed, placeholder, acronym
+                )
 
         if AcronymProtector.has_placeholders(fixed):
             issues.append("Cleaning up remaining placeholder artifacts")
@@ -1432,7 +1445,8 @@ class PersistentCache:
 
     def _create_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(
-            self.db_path, timeout=30.0, check_same_thread=False, isolation_level=None
+            self.db_path, timeout=30.0, check_same_thread=False,
+            isolation_level=None
         )
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
@@ -1527,14 +1541,17 @@ class PersistentCache:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT translated_text, created_at FROM translations WHERE id = ?",
+                    "SELECT translated_text, created_at FROM translations "
+                    "WHERE id = ?",
                     (key,)
                 )
                 result = cursor.fetchone()
                 if result:
                     trans_text, created_at_str = result
                     try:
-                        created_dt = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
+                        created_dt = datetime.strptime(
+                            created_at_str, "%Y-%m-%d %H:%M:%S"
+                        )
                         created_dt = created_dt.replace(tzinfo=timezone.utc)
                         now_utc = datetime.now(timezone.utc)
                         delta = now_utc - created_dt
@@ -1601,7 +1618,7 @@ class PersistentCache:
 
 
 # ==============================================================================
-# RATE LIMITER - FIXED with handle_rate_limit_simple
+# RATE LIMITER
 # ==============================================================================
 
 
@@ -1629,7 +1646,8 @@ class RateLimiter:
                 self._rate_limit_count += 1
                 wait_time = min(
                     API_CONFIG.RATE_LIMIT_INITIAL_WAIT * (
-                        API_CONFIG.RATE_LIMIT_BACKOFF_FACTOR ** self._rate_limit_count
+                        API_CONFIG.RATE_LIMIT_BACKOFF_FACTOR **
+                        self._rate_limit_count
                     ),
                     API_CONFIG.RATE_LIMIT_MAX_WAIT
                 )
@@ -1647,7 +1665,8 @@ class RateLimiter:
             self._rate_limit_count += 1
             wait_time = min(
                 API_CONFIG.RATE_LIMIT_INITIAL_WAIT * (
-                    API_CONFIG.RATE_LIMIT_BACKOFF_FACTOR ** self._rate_limit_count
+                    API_CONFIG.RATE_LIMIT_BACKOFF_FACTOR **
+                    self._rate_limit_count
                 ),
                 API_CONFIG.RATE_LIMIT_MAX_WAIT
             )
@@ -1807,14 +1826,16 @@ class ZendeskController:
         
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'ZendeskDCManager/41.0',
+            'User-Agent': 'ZendeskDCManager/42.0',
             'Content-Type': 'application/json'
         })
         retry_strategy = Retry(
             total=API_CONFIG.RETRY_COUNT,
             backoff_factor=API_CONFIG.RETRY_BASE_DELAY,
             status_forcelist=[500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"]
+            allowed_methods=[
+                "HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE", "POST"
+            ]
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("https://", adapter)
@@ -1867,19 +1888,48 @@ class ZendeskController:
                     if not update_all:
                         break
 
+    @contextmanager
+    def work_items_readonly(self) -> Generator[List[Dict[str, Any]], None, None]:
+        """Context manager for read-only access without copying.
+        
+        Warning: Caller must NOT modify the returned list or its contents.
+        """
+        with self._work_items_lock:
+            yield self._work_items
+
+    def work_items_snapshot(self) -> List[Dict[str, Any]]:
+        """Get a shallow copy (faster than deep copy) for iteration."""
+        with self._work_items_lock:
+            return list(self._work_items)
+
+    def get_work_items_safe(self) -> List[Dict[str, Any]]:
+        """Get work items with validation."""
+        with self._work_items_lock:
+            return [item.copy() for item in self._work_items if item is not None]
+
     def cleanup(self):
-        if self.session:
+        """Clean up resources. Safe to call multiple times."""
+        # Close session first (no lock needed)
+        session = self.session
+        self.session = None
+        if session:
             try:
-                self.session.close()
+                session.close()
             except Exception:
                 pass
-            self.session = None
-        if self.cache:
+        
+        # Clean up cache with timeout to avoid blocking
+        cache = self.cache
+        self.cache = None
+        if cache:
             try:
-                self.cache.cleanup()
+                cleanup_thread = threading.Thread(
+                    target=cache.cleanup, daemon=True
+                )
+                cleanup_thread.start()
+                cleanup_thread.join(timeout=5.0)
             except Exception:
                 pass
-            self.cache = None
 
     def _sanitize(self, text: str) -> str:
         if not text:
@@ -1996,7 +2046,9 @@ class ZendeskController:
                     os.makedirs(self.backup_folder)
                 except Exception as e:
                     if log_callback:
-                        log_callback.emit(f"Warning: Could not create backup folder: {e}")
+                        log_callback.emit(
+                            f"Warning: Could not create backup folder: {e}"
+                        )
                     self.backup_folder = os.getcwd()
         else:
             self.backup_folder = os.getcwd()
@@ -2025,7 +2077,9 @@ class ZendeskController:
                 name = data['user'].get('name', 'Unknown')
                 role = data['user'].get('role', 'unknown')
                 if role == 'end-user':
-                    raise Exception("Authentication Failed: Check Your Credentials")
+                    raise Exception(
+                        "Authentication Failed: Check Your Credentials"
+                    )
                 if role not in ['admin', 'agent']:
                     raise Exception(f"Auth Failed: Role '{role}' insufficient.")
                 if log_callback:
@@ -2046,7 +2100,10 @@ class ZendeskController:
 
     def _fetch_instance_locale(self, log_callback: Optional[pyqtSignal] = None):
         try:
-            url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/account/settings.json"
+            url = (
+                f"https://{self.creds['subdomain']}.zendesk.com"
+                f"/api/v2/account/settings.json"
+            )
             resp = self.session.get(url, timeout=API_CONFIG.TIMEOUT_SHORT)
             if resp.status_code == 200:
                 settings = resp.json().get('settings', {})
@@ -2054,14 +2111,21 @@ class ZendeskController:
                     'localization', {}
                 ).get('locale', 'en-US')
                 if log_callback:
-                    log_callback.emit(f"Instance Locale: {self.instance_default_locale}")
+                    log_callback.emit(
+                        f"Instance Locale: {self.instance_default_locale}"
+                    )
         except Exception as e:
             if log_callback:
-                log_callback.emit(f"Warning: Could not fetch locale settings: {e}")
+                log_callback.emit(
+                    f"Warning: Could not fetch locale settings: {e}"
+                )
 
     def _fetch_locale_mapping(self, log_callback: Optional[pyqtSignal] = None):
         try:
-            url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/locales.json"
+            url = (
+                f"https://{self.creds['subdomain']}.zendesk.com"
+                f"/api/v2/locales.json"
+            )
             resp = self.session.get(url, timeout=API_CONFIG.TIMEOUT_SHORT)
             if resp.status_code == 200:
                 locales = resp.json().get('locales', [])
@@ -2092,7 +2156,10 @@ class ZendeskController:
         max_retries = API_CONFIG.RETRY_COUNT
         for attempt in range(max_retries):
             try:
-                url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/dynamic_content/items/{dc_id}.json"
+                url = (
+                    f"https://{self.creds['subdomain']}.zendesk.com"
+                    f"/api/v2/dynamic_content/items/{dc_id}.json"
+                )
                 resp = self.session.get(url, timeout=API_CONFIG.TIMEOUT_DEFAULT)
                 if resp.status_code == 200:
                     self._rate_limiter.decrease_count()
@@ -2127,7 +2194,8 @@ class ZendeskController:
         return {}
 
     def _fetch_dc_variants_batch(
-        self, dc_ids: List[int], progress_callback: pyqtSignal, log_callback: pyqtSignal
+        self, dc_ids: List[int], progress_callback: pyqtSignal,
+        log_callback: pyqtSignal
     ) -> Dict[int, Dict[str, str]]:
         total = len(dc_ids)
         if total == 0:
@@ -2139,7 +2207,9 @@ class ZendeskController:
         empty_responses = AtomicCounter(0)
         start_time = time.time()
         max_workers = min(API_CONFIG.THREAD_POOL_SIZE_VARIANTS, total)
-        log_callback.emit(f"Loading {total} DC variants ({max_workers} parallel)...")
+        log_callback.emit(
+            f"Loading {total} DC variants ({max_workers} parallel)..."
+        )
         batch_size = max_workers * 2
 
         for batch_start in range(0, total, batch_size):
@@ -2148,14 +2218,18 @@ class ZendeskController:
             batch_end = min(batch_start + batch_size, total)
             batch_ids = dc_ids[batch_start:batch_end]
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_workers
+            ) as executor:
                 future_to_dc_id = {
                     executor.submit(self._fetch_dc_variants, dc_id): dc_id
                     for dc_id in batch_ids
                 }
                 
                 try:
-                    for future in concurrent.futures.as_completed(future_to_dc_id):
+                    for future in concurrent.futures.as_completed(
+                        future_to_dc_id
+                    ):
                         if self.stop_requested:
                             raise Exception("Operation Canceled")
                         
@@ -2173,15 +2247,17 @@ class ZendeskController:
                         except Exception:
                             errors.increment()
 
-                        eta = self._calc_eta(start_time, current_processed, total)
+                        eta = self._calc_eta(
+                            start_time, current_processed, total
+                        )
                         with results_lock:
                             found_count = len(results)
                         progress_callback.emit(
                             current_processed, total,
-                            f"Loading: {current_processed}/{total} | Found: {found_count} | ETA: {eta}"
+                            f"Loading: {current_processed}/{total} | "
+                            f"Found: {found_count} | ETA: {eta}"
                         )
                 except Exception as e:
-                    # Cancel pending futures on exception
                     for f in future_to_dc_id.keys():
                         f.cancel()
                     raise
@@ -2193,7 +2269,8 @@ class ZendeskController:
         with results_lock:
             final_count = len(results)
         log_callback.emit(
-            f"Variant loading: {final_count} found, {empty_responses.value} empty, "
+            f"Variant loading: {final_count} found, "
+            f"{empty_responses.value} empty, "
             f"{errors.value} errors, {elapsed_str}"
         )
         return results
@@ -2214,7 +2291,10 @@ class ZendeskController:
         log_callback.emit("Fetching existing Dynamic Content...")
         existing_dc: Dict[str, int] = {}
         existing_dc_set: Set[str] = set()
-        url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/dynamic_content/items.json"
+        url = (
+            f"https://{self.creds['subdomain']}.zendesk.com"
+            f"/api/v2/dynamic_content/items.json"
+        )
         page_counter = 0
         seen_urls: Set[str] = set()
 
@@ -2244,14 +2324,20 @@ class ZendeskController:
                         existing_dc[item_name] = item['id']
                         existing_dc_set.add(item_name)
                 page_counter += 1
-                progress_callback.emit(0, 0, f"DC list: Page {page_counter} ({len(existing_dc)} items)")
+                progress_callback.emit(
+                    0, 0,
+                    f"DC list: Page {page_counter} ({len(existing_dc)} items)"
+                )
                 url = data.get('next_page')
             except Exception as e:
                 log_callback.emit(f"Warning: Error fetching DC: {e}")
                 break
 
         if page_counter >= API_CONFIG.MAX_PAGINATION_PAGES:
-            log_callback.emit(f"Warning: Reached max pagination limit ({API_CONFIG.MAX_PAGINATION_PAGES})")
+            log_callback.emit(
+                f"Warning: Reached max pagination limit "
+                f"({API_CONFIG.MAX_PAGINATION_PAGES})"
+            )
 
         log_callback.emit(f"Found {len(existing_dc)} existing DC items")
         log_callback.emit("Scanning Zendesk objects...")
@@ -2277,8 +2363,13 @@ class ZendeskController:
         if not tasks:
             raise Exception("No scan tasks selected")
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=API_CONFIG.THREAD_POOL_SIZE) as executor:
-            futures = {executor.submit(task, log_callback): task.__name__ for task in tasks}
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=API_CONFIG.THREAD_POOL_SIZE
+        ) as executor:
+            futures = {
+                executor.submit(task, log_callback): task.__name__
+                for task in tasks
+            }
             try:
                 for future in concurrent.futures.as_completed(futures):
                     if self.stop_requested:
@@ -2287,11 +2378,15 @@ class ZendeskController:
                     try:
                         result_items = future.result()
                         raw_items.extend(result_items)
-                        progress_callback.emit(0, 0, f"Found {len(raw_items)} items...")
+                        progress_callback.emit(
+                            0, 0, f"Found {len(raw_items)} items..."
+                        )
                     except concurrent.futures.CancelledError:
                         pass
                     except Exception as e:
-                        log_callback.emit(f"Scan Error in {task_name}: {str(e)}")
+                        log_callback.emit(
+                            f"Scan Error in {task_name}: {str(e)}"
+                        )
             except Exception as e:
                 for f in futures.keys():
                     f.cancel()
@@ -2335,12 +2430,16 @@ class ZendeskController:
                     seen_dc_names.add(item['dc_name'])
 
                 work_item = {
-                    'id': item['id'], 'type': item['type'], 'context': item['context'],
-                    'dc_name': item['dc_name'], 'placeholder': f"{{{{dc.{item['dc_name']}}}}}",
+                    'id': item['id'], 'type': item['type'],
+                    'context': item['context'],
+                    'dc_name': item['dc_name'],
+                    'placeholder': f"{{{{dc.{item['dc_name']}}}}}",
                     'pt': item['title'], 'en': "", 'es': "",
-                    'en_source': SOURCE_NEW, 'es_source': SOURCE_NEW, 'pt_source': source,
+                    'en_source': SOURCE_NEW, 'es_source': SOURCE_NEW,
+                    'pt_source': source,
                     'action': action, 'dc_id': dc_id, 'is_option': False,
-                    'parent_id': None, 'tags': ",".join(item['tags']) if item['tags'] else "",
+                    'parent_id': None,
+                    'tags': ",".join(item['tags']) if item['tags'] else "",
                     'force_update': False, 'source': source
                 }
                 new_work_items.append(work_item)
@@ -2371,11 +2470,15 @@ class ZendeskController:
                     seen_dc_names.add(sanitized_key)
 
                 opt_work_item = {
-                    'id': opt.get('id'), 'type': 'option', 'context': 'Ticket',
-                    'dc_name': sanitized_key, 'placeholder': f"{{{{dc.{sanitized_key}}}}}",
+                    'id': opt.get('id'), 'type': 'option',
+                    'context': 'Ticket',
+                    'dc_name': sanitized_key,
+                    'placeholder': f"{{{{dc.{sanitized_key}}}}}",
                     'pt': opt['name'], 'en': "", 'es': "",
-                    'en_source': SOURCE_NEW, 'es_source': SOURCE_NEW, 'pt_source': opt_source,
-                    'action': opt_action, 'dc_id': opt_dc_id, 'is_option': True,
+                    'en_source': SOURCE_NEW, 'es_source': SOURCE_NEW,
+                    'pt_source': opt_source,
+                    'action': opt_action, 'dc_id': opt_dc_id,
+                    'is_option': True,
                     'parent_id': item['id'], 'tags': opt.get('value', ''),
                     'force_update': False, 'source': opt_source
                 }
@@ -2386,7 +2489,9 @@ class ZendeskController:
                     dc_id_to_items[opt_dc_id].append(opt_work_item)
 
         if dc_ids_to_fetch:
-            log_callback.emit(f"Loading {len(dc_ids_to_fetch)} DC translations...")
+            log_callback.emit(
+                f"Loading {len(dc_ids_to_fetch)} DC translations..."
+            )
             try:
                 fetched_variants = self._fetch_dc_variants_batch(
                     dc_ids_to_fetch, progress_callback, log_callback
@@ -2447,19 +2552,36 @@ class ZendeskController:
                     seen_urls.discard(url)
                     continue
                 if resp.status_code != 200:
+                    log_callback.emit(
+                        f"API returned status {resp.status_code}"
+                    )
                     return
-                data = resp.json()
+                
+                try:
+                    data = resp.json()
+                except json.JSONDecodeError as e:
+                    log_callback.emit(f"Invalid JSON response: {e}")
+                    return
+                    
                 for item in data.get(items_key, []):
                     yield item
                 page_counter += 1
                 url = data.get('next_page')
+                
+            except requests.exceptions.Timeout:
+                log_callback.emit(f"Timeout fetching {url}")
+                return
+            except requests.exceptions.RequestException as e:
+                log_callback.emit(f"Request error: {e}")
+                return
             except Exception as e:
                 log_callback.emit(f"Pagination error: {e}")
                 return
 
     def _process_generic_obj(
         self, obj: Dict[str, Any], obj_type: str,
-        tags: Optional[List[str]] = None, options: Optional[List[Dict[str, Any]]] = None
+        tags: Optional[List[str]] = None,
+        options: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[Dict[str, Any]]:
         if obj is None:
             return None
@@ -2510,7 +2632,9 @@ class ZendeskController:
             dc_name = f"hc_art_{dc_name}"
 
         is_parent_dc = self._is_dc_string(title)
-        pending_opts = [o for o in options if not self._is_dc_string(o.get('name', ''))]
+        pending_opts = [
+            o for o in options if not self._is_dc_string(o.get('name', ''))
+        ]
         if is_parent_dc and len(pending_opts) == 0:
             return None
 
@@ -2523,11 +2647,15 @@ class ZendeskController:
     def _scan_fields(self, log_cb: pyqtSignal) -> List[Dict[str, Any]]:
         log_cb.emit("Scanning Ticket Fields...")
         results = []
-        url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/ticket_fields.json"
+        url = (
+            f"https://{self.creds['subdomain']}.zendesk.com"
+            f"/api/v2/ticket_fields.json"
+        )
         
         for field in self._paginate_api(url, 'ticket_fields', log_cb):
             item = self._process_generic_obj(
-                field, 'field', field.get('tags', []), field.get('custom_field_options', [])
+                field, 'field', field.get('tags', []),
+                field.get('custom_field_options', [])
             )
             if item:
                 results.append(item)
@@ -2538,7 +2666,10 @@ class ZendeskController:
     def _scan_forms(self, log_cb: pyqtSignal) -> List[Dict[str, Any]]:
         log_cb.emit("Scanning Ticket Forms...")
         results = []
-        url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/ticket_forms.json"
+        url = (
+            f"https://{self.creds['subdomain']}.zendesk.com"
+            f"/api/v2/ticket_forms.json"
+        )
         
         for form in self._paginate_api(url, 'ticket_forms', log_cb):
             item = self._process_generic_obj(form, 'form')
@@ -2551,7 +2682,10 @@ class ZendeskController:
     def _scan_categories(self, log_cb: pyqtSignal) -> List[Dict[str, Any]]:
         log_cb.emit("Scanning Help Center Categories...")
         results = []
-        url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/help_center/categories.json"
+        url = (
+            f"https://{self.creds['subdomain']}.zendesk.com"
+            f"/api/v2/help_center/categories.json"
+        )
         
         for cat in self._paginate_api(url, 'categories', log_cb):
             item = self._process_generic_obj(cat, 'category')
@@ -2564,7 +2698,10 @@ class ZendeskController:
     def _scan_sections(self, log_cb: pyqtSignal) -> List[Dict[str, Any]]:
         log_cb.emit("Scanning Help Center Sections...")
         results = []
-        url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/help_center/sections.json"
+        url = (
+            f"https://{self.creds['subdomain']}.zendesk.com"
+            f"/api/v2/help_center/sections.json"
+        )
         
         for sect in self._paginate_api(url, 'sections', log_cb):
             item = self._process_generic_obj(sect, 'section')
@@ -2577,7 +2714,10 @@ class ZendeskController:
     def _scan_articles(self, log_cb: pyqtSignal) -> List[Dict[str, Any]]:
         log_cb.emit("Scanning Help Center Articles...")
         results = []
-        url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/help_center/articles.json"
+        url = (
+            f"https://{self.creds['subdomain']}.zendesk.com"
+            f"/api/v2/help_center/articles.json"
+        )
         
         for art in self._paginate_api(url, 'articles', log_cb):
             item = self._process_generic_obj(art, 'article')
@@ -2588,7 +2728,8 @@ class ZendeskController:
         return results
 
     def set_translation_config(
-        self, provider: str, api_key: str, protect_acronyms: bool, expiry_days: int
+        self, provider: str, api_key: str, protect_acronyms: bool,
+        expiry_days: int
     ):
         self.trans_provider = provider
         self.trans_api_key = api_key.strip() if api_key else ""
@@ -2601,11 +2742,27 @@ class ZendeskController:
             total = len(work_items)
             missing_en = sum(1 for i in work_items if not i.get('en'))
             missing_es = sum(1 for i in work_items if not i.get('es'))
-            missing_both = sum(1 for i in work_items if not i.get('en') and not i.get('es'))
-            has_existing = sum(1 for i in work_items if i.get('en') and i.get('es'))
-            from_dc = sum(1 for i in work_items if i.get('source') == SOURCE_ZENDESK_DC)
-            needs_translation = sum(1 for i in work_items if not i.get('en') or not i.get('es'))
-            failed = sum(1 for i in work_items if i.get('en_source') == SOURCE_FAILED or i.get('es_source') == SOURCE_FAILED)
+            missing_both = sum(
+                1 for i in work_items
+                if not i.get('en') and not i.get('es')
+            )
+            has_existing = sum(
+                1 for i in work_items
+                if i.get('en') and i.get('es')
+            )
+            from_dc = sum(
+                1 for i in work_items
+                if i.get('source') == SOURCE_ZENDESK_DC
+            )
+            needs_translation = sum(
+                1 for i in work_items
+                if not i.get('en') or not i.get('es')
+            )
+            failed = sum(
+                1 for i in work_items
+                if i.get('en_source') == SOURCE_FAILED
+                or i.get('es_source') == SOURCE_FAILED
+            )
         
         return {
             'total': total, 'missing_en': missing_en, 'missing_es': missing_es,
@@ -2633,7 +2790,10 @@ class ZendeskController:
             to_translate = work_items_snapshot
             log_callback.emit("[FORCE] Retranslating ALL items")
         else:
-            to_translate = [i for i in work_items_snapshot if not i.get('en') or not i.get('es')]
+            to_translate = [
+                i for i in work_items_snapshot
+                if not i.get('en') or not i.get('es')
+            ]
 
         stats.total = len(to_translate)
         log_callback.emit(f"Translating {stats.total} items...")
@@ -2644,9 +2804,13 @@ class ZendeskController:
             return stats
 
         start_time = time.time()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=API_CONFIG.THREAD_POOL_SIZE) as executor:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=API_CONFIG.THREAD_POOL_SIZE
+        ) as executor:
             future_map = {
-                executor.submit(self._fetch_trans, item, log_callback, force_retranslate): idx
+                executor.submit(
+                    self._fetch_trans, item, log_callback, force_retranslate
+                ): idx
                 for idx, item in enumerate(to_translate)
             }
             count = 0
@@ -2662,10 +2826,14 @@ class ZendeskController:
                     
                     try:
                         result = future.result()
-                        match_criteria = {'id': item['id'], 'type': item['type'], 'dc_name': item['dc_name']}
+                        match_criteria = {
+                            'id': item['id'], 'type': item['type'],
+                            'dc_name': item['dc_name']
+                        }
                         updates = {
                             'en': result.en, 'es': result.es,
-                            'en_source': result.en_source, 'es_source': result.es_source
+                            'en_source': result.en_source,
+                            'es_source': result.es_source
                         }
                         self.update_work_item_by_match(match_criteria, updates)
                         
@@ -2676,12 +2844,18 @@ class ZendeskController:
                             stats.translated += 1
                         
                         eta = self._calc_eta(start_time, count, stats.total)
-                        progress_callback.emit(count, stats.total, f"Translated: {count}/{stats.total} | ETA: {eta}")
+                        progress_callback.emit(
+                            count, stats.total,
+                            f"Translated: {count}/{stats.total} | ETA: {eta}"
+                        )
                     except concurrent.futures.CancelledError:
                         pass
                     except Exception as e:
                         stats.failed += 1
-                        log_callback.emit(f"Translation Error for '{item.get('dc_name', 'unknown')}': {e}")
+                        log_callback.emit(
+                            f"Translation Error for "
+                            f"'{item.get('dc_name', 'unknown')}': {e}"
+                        )
             except Exception as e:
                 for f in future_map.keys():
                     f.cancel()
@@ -2689,27 +2863,38 @@ class ZendeskController:
         
         failures = self._translation_failures.value
         if failures > 0:
-            log_callback.emit(f"Warning: {failures} translation(s) failed and used fallback text")
+            log_callback.emit(
+                f"Warning: {failures} translation(s) failed and used fallback"
+            )
         
         self._last_translation_stats = stats
         return stats
 
     def _fetch_trans(
-        self, item: Dict[str, Any], log_callback: pyqtSignal, force_retranslate: bool = False
+        self, item: Dict[str, Any], log_callback: pyqtSignal,
+        force_retranslate: bool = False
     ) -> TranslationResult:
         text = item.get('pt', '')
         if not text:
             return TranslationResult()
 
         original_text = text.strip()
-        existing_en = item.get('en', '') if not force_retranslate else ''
-        existing_es = item.get('es', '') if not force_retranslate else ''
+        
+        # Always preserve existing translations as fallback
+        existing_en = item.get('en', '')
+        existing_es = item.get('es', '')
         existing_en_source = item.get('en_source', SOURCE_NEW)
         existing_es_source = item.get('es_source', SOURCE_NEW)
+        
+        # Determine if we need to translate
+        need_en = force_retranslate or not existing_en
+        need_es = force_retranslate or not existing_es
 
         result = TranslationResult()
 
-        if self.protect_acronyms and AcronymProtector.should_skip_translation(original_text):
+        if self.protect_acronyms and AcronymProtector.should_skip_translation(
+            original_text
+        ):
             result.en = original_text
             result.es = original_text
             result.en_source = SOURCE_NEW
@@ -2717,7 +2902,9 @@ class ZendeskController:
             return result
 
         if self.protect_acronyms:
-            protected_text, acr_map, should_skip = AcronymProtector.protect(text)
+            protected_text, acr_map, should_skip = AcronymProtector.protect(
+                text
+            )
             if should_skip and "__SKIP__" in acr_map:
                 result.en = original_text
                 result.es = original_text
@@ -2729,31 +2916,58 @@ class ZendeskController:
             acr_map = {}
 
         text_length = len(protected_text.strip())
-        needs_padding = TRANSLATION_CONFIG.MIN_TEXT_FOR_PADDING_LOWER < text_length < TRANSLATION_CONFIG.MIN_TEXT_FOR_PADDING
+        needs_padding = (
+            TRANSLATION_CONFIG.MIN_TEXT_FOR_PADDING_LOWER < text_length <
+            TRANSLATION_CONFIG.MIN_TEXT_FOR_PADDING
+        )
         if needs_padding:
             padded_text = AcronymProtector.add_context_padding(protected_text)
         else:
             padded_text = protected_text
 
         # Translate English
-        if existing_en and not force_retranslate:
-            en_raw, en_source, en_failed = existing_en, existing_en_source, False
+        en_failed = False
+        if need_en:
+            en_raw, en_failed = self._trans_with_status(
+                padded_text, 'en', original_text
+            )
+            if en_failed and existing_en:
+                # Fall back to existing translation on failure
+                en_raw = existing_en
+                en_source = existing_en_source
+                en_failed = False
+            else:
+                en_source = SOURCE_FAILED if en_failed else SOURCE_TRANSLATED
         else:
-            en_raw, en_failed = self._trans_with_status(padded_text, 'en', original_text)
-            en_source = SOURCE_FAILED if en_failed else SOURCE_TRANSLATED
+            en_raw = existing_en
+            en_source = existing_en_source
 
         # Translate Spanish
-        if existing_es and not force_retranslate:
-            es_raw, es_source, es_failed = existing_es, existing_es_source, False
+        es_failed = False
+        if need_es:
+            es_raw, es_failed = self._trans_with_status(
+                padded_text, 'es', original_text
+            )
+            if es_failed and existing_es:
+                # Fall back to existing translation on failure
+                es_raw = existing_es
+                es_source = existing_es_source
+                es_failed = False
+            else:
+                es_source = SOURCE_FAILED if es_failed else SOURCE_TRANSLATED
         else:
-            es_raw, es_failed = self._trans_with_status(padded_text, 'es', original_text)
-            es_source = SOURCE_FAILED if es_failed else SOURCE_TRANSLATED
+            es_raw = existing_es
+            es_source = existing_es_source
 
         if needs_padding:
             if en_source == SOURCE_TRANSLATED:
-                en_raw = AcronymProtector.remove_context_padding(en_raw, original_text)
+                en_raw = AcronymProtector.remove_context_padding(
+                    en_raw, original_text
+                )
             if es_source == SOURCE_TRANSLATED:
-                es_raw = AcronymProtector.remove_context_padding(es_raw, original_text)
+                es_raw = AcronymProtector.remove_context_padding(
+                    es_raw, original_text
+                )
 
         if self.protect_acronyms and acr_map and "__SKIP__" not in acr_map:
             if en_source in (SOURCE_TRANSLATED, SOURCE_FAILED):
@@ -2764,12 +2978,22 @@ class ZendeskController:
                 es_restored = AcronymProtector.restore(es_raw, acr_map)
             else:
                 es_restored = es_raw
-            en_final, _ = AcronymProtector.verify_and_fix(original_text, en_restored, acr_map)
-            es_final, _ = AcronymProtector.verify_and_fix(original_text, es_restored, acr_map)
+            en_final, _ = AcronymProtector.verify_and_fix(
+                original_text, en_restored, acr_map
+            )
+            es_final, _ = AcronymProtector.verify_and_fix(
+                original_text, es_restored, acr_map
+            )
             if AcronymProtector.has_placeholders(en_final):
-                en_final = AcronymProtector.cleanup_placeholders(en_final) or original_text
+                en_final = (
+                    AcronymProtector.cleanup_placeholders(en_final)
+                    or original_text
+                )
             if AcronymProtector.has_placeholders(es_final):
-                es_final = AcronymProtector.cleanup_placeholders(es_final) or original_text
+                es_final = (
+                    AcronymProtector.cleanup_placeholders(es_final)
+                    or original_text
+                )
             
             result.en = en_final
             result.es = es_final
@@ -2780,13 +3004,13 @@ class ZendeskController:
             return result
 
         if not en_raw:
-            en_raw = original_text
-            en_failed = True
-            en_source = SOURCE_FAILED
+            en_raw = existing_en if existing_en else original_text
+            en_failed = not existing_en
+            en_source = existing_en_source if existing_en else SOURCE_FAILED
         if not es_raw:
-            es_raw = original_text
-            es_failed = True
-            es_source = SOURCE_FAILED
+            es_raw = existing_es if existing_es else original_text
+            es_failed = not existing_es
+            es_source = existing_es_source if existing_es else SOURCE_FAILED
             
         if AcronymProtector.has_placeholders(en_raw):
             en_raw = AcronymProtector.cleanup_placeholders(en_raw)
@@ -2814,7 +3038,8 @@ class ZendeskController:
             cached_result = self.cache.get_with_age(cache_key, target)
             if cached_result:
                 trans_text, age_days = cached_result
-                if not AcronymProtector.has_placeholders(trans_text) and age_days < self.cache_expiry_days:
+                if (not AcronymProtector.has_placeholders(trans_text)
+                        and age_days < self.cache_expiry_days):
                     return trans_text, False
 
         translation = ""
@@ -2826,7 +3051,10 @@ class ZendeskController:
             else:
                 translation = self._translate_google_web(text, target)
         except Exception as e:
-            logger.warning(f"Translation failed for '{original_text[:30]}...' to {target}: {e}")
+            logger.warning(
+                f"Translation failed for '{original_text[:30]}...' "
+                f"to {target}: {e}"
+            )
             failed = True
 
         if not translation:
@@ -2844,8 +3072,13 @@ class ZendeskController:
         if not self.trans_api_key:
             raise Exception("API Key is missing.")
         url = "https://translation.googleapis.com/language/translate/v2"
-        params = {"q": text, "target": target, "key": self.trans_api_key, "format": "text"}
-        resp = self.session.post(url, params=params, timeout=API_CONFIG.TIMEOUT_SHORT)
+        params = {
+            "q": text, "target": target,
+            "key": self.trans_api_key, "format": "text"
+        }
+        resp = self.session.post(
+            url, params=params, timeout=API_CONFIG.TIMEOUT_SHORT
+        )
         if resp.status_code == 200:
             data = resp.json()
             try:
@@ -2854,13 +3087,23 @@ class ZendeskController:
             except (KeyError, IndexError) as e:
                 raise Exception(f"Unexpected API response: {e}")
         else:
-            raise Exception(f"Google API Error ({resp.status_code}): {resp.text[:200]}")
+            raise Exception(
+                f"Google API Error ({resp.status_code}): {resp.text[:200]}"
+            )
 
     def _translate_google_web(self, text: str, target: str) -> str:
         last_error = None
         for attempt in range(API_CONFIG.RETRY_COUNT):
-            time.sleep(random.uniform(TRANSLATION_CONFIG.DELAY_MIN, TRANSLATION_CONFIG.DELAY_MAX))
-            params = {"client": "gtx", "sl": "auto", "tl": target, "dt": "t", "q": text}
+            time.sleep(
+                random.uniform(
+                    TRANSLATION_CONFIG.DELAY_MIN,
+                    TRANSLATION_CONFIG.DELAY_MAX
+                )
+            )
+            params = {
+                "client": "gtx", "sl": "auto",
+                "tl": target, "dt": "t", "q": text
+            }
             try:
                 resp = requests.get(
                     "https://translate.googleapis.com/translate_a/single",
@@ -2869,7 +3112,9 @@ class ZendeskController:
                 if resp.status_code == 200:
                     data = resp.json()
                     if data and data[0]:
-                        return "".join([x[0] for x in data[0] if x and x[0]])
+                        return "".join(
+                            [x[0] for x in data[0] if x and x[0]]
+                        )
                 if resp.status_code == 429:
                     last_error = "Rate limited"
                     time.sleep(2 * (attempt + 1))
@@ -2883,7 +3128,10 @@ class ZendeskController:
                 time.sleep(1)
         
         if last_error:
-            logger.warning(f"Google Web translation failed after {API_CONFIG.RETRY_COUNT} attempts: {last_error}")
+            logger.warning(
+                f"Google Web translation failed after "
+                f"{API_CONFIG.RETRY_COUNT} attempts: {last_error}"
+            )
         return ""
 
     def clear_cache(self) -> bool:
@@ -2895,21 +3143,26 @@ class ZendeskController:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_filename = f"backup_{timestamp}.json"
         backup_dir = self.backup_folder
-        if not backup_dir or not os.path.exists(backup_dir) or not os.access(backup_dir, os.W_OK):
+        if (not backup_dir or not os.path.exists(backup_dir)
+                or not os.access(backup_dir, os.W_OK)):
             backup_dir = os.path.expanduser("~/Documents")
             if not os.path.exists(backup_dir):
                 backup_dir = os.getcwd()
         full_path = os.path.join(backup_dir, backup_filename)
         backup_data = {
-            "timestamp": timestamp, "subdomain": self.creds.get('subdomain', 'unknown'), "items": []
+            "timestamp": timestamp,
+            "subdomain": self.creds.get('subdomain', 'unknown'),
+            "items": []
         }
         for item in items_to_process:
             backup_data["items"].append({
-                "id": item.get('id'), "type": item.get('type', ''), 
+                "id": item.get('id'), "type": item.get('type', ''),
                 "context": item.get('context', 'Unknown'),
-                "original_text": item.get('pt', ''), "en": item.get('en', ''), 
+                "original_text": item.get('pt', ''),
+                "en": item.get('en', ''),
                 "es": item.get('es', ''),
-                "placeholder": item.get('placeholder', ''), "parent_id": item.get('parent_id'),
+                "placeholder": item.get('placeholder', ''),
+                "parent_id": item.get('parent_id'),
                 "dc_name": item.get('dc_name', '')
             })
         try:
@@ -2928,8 +3181,12 @@ class ZendeskController:
         self.reset_stop()
         self._rate_limiter.reset()
         log_callback.emit("Creating Backup...")
-        created_backup = self.generate_backup_file(items_to_process, log_callback)
-        self.last_execution_results = {'success': [], 'failed': [], 'backup_file': created_backup or ''}
+        created_backup = self.generate_backup_file(
+            items_to_process, log_callback
+        )
+        self.last_execution_results = {
+            'success': [], 'failed': [], 'backup_file': created_backup or ''
+        }
 
         if not items_to_process:
             log_callback.emit("No items to process")
@@ -2939,14 +3196,20 @@ class ZendeskController:
         start_time = time.time()
         l_map = self._fetch_locale_map_for_apply(log_callback)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=API_CONFIG.THREAD_POOL_SIZE) as executor:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=API_CONFIG.THREAD_POOL_SIZE
+        ) as executor:
             futures = {
-                executor.submit(self._apply_single_with_retry, item, l_map, log_callback): item
+                executor.submit(
+                    self._apply_single_with_retry, item, l_map, log_callback
+                ): item
                 for item in items_to_process
             }
             
             try:
-                for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                for i, future in enumerate(
+                    concurrent.futures.as_completed(futures)
+                ):
                     if self.stop_requested:
                         raise Exception("Operation Canceled")
                     
@@ -2955,25 +3218,38 @@ class ZendeskController:
                         res = future.result()
                         log_callback.emit(res)
                         self.last_execution_results['success'].append(res)
-                        eta = self._calc_eta(start_time, i + 1, len(items_to_process))
-                        progress_callback.emit(i + 1, len(items_to_process), f"Applied: {i + 1}/{len(items_to_process)} | ETA: {eta}")
+                        eta = self._calc_eta(
+                            start_time, i + 1, len(items_to_process)
+                        )
+                        progress_callback.emit(
+                            i + 1, len(items_to_process),
+                            f"Applied: {i + 1}/{len(items_to_process)} | "
+                            f"ETA: {eta}"
+                        )
                     except concurrent.futures.CancelledError:
                         pass
                     except ZendeskAPIError as e:
                         error_info = {
-                            'item': item.get('dc_name', 'unknown'), 'type': item.get('type', 'unknown'),
+                            'item': item.get('dc_name', 'unknown'),
+                            'type': item.get('type', 'unknown'),
                             'error': str(e), 'status_code': e.status_code,
                             'error_type': e.error_type, 'details': e.details
                         }
                         self.last_execution_results['failed'].append(error_info)
-                        log_callback.emit(f"FAILED: {item.get('dc_name', 'unknown')} - {e}")
+                        log_callback.emit(
+                            f"FAILED: {item.get('dc_name', 'unknown')} - {e}"
+                        )
                     except Exception as e:
                         error_info = {
-                            'item': item.get('dc_name', 'unknown'), 'type': item.get('type', 'unknown'),
-                            'error': str(e), 'status_code': 0, 'error_type': 'Unknown', 'details': ''
+                            'item': item.get('dc_name', 'unknown'),
+                            'type': item.get('type', 'unknown'),
+                            'error': str(e), 'status_code': 0,
+                            'error_type': 'Unknown', 'details': ''
                         }
                         self.last_execution_results['failed'].append(error_info)
-                        log_callback.emit(f"FAILED: {item.get('dc_name', 'unknown')} - {e}")
+                        log_callback.emit(
+                            f"FAILED: {item.get('dc_name', 'unknown')} - {e}"
+                        )
             except Exception as e:
                 for f in futures.keys():
                     f.cancel()
@@ -2981,9 +3257,14 @@ class ZendeskController:
                 
         return self.last_execution_results
 
-    def _fetch_locale_map_for_apply(self, log_callback: pyqtSignal) -> Dict[str, int]:
+    def _fetch_locale_map_for_apply(
+        self, log_callback: pyqtSignal
+    ) -> Dict[str, int]:
         try:
-            url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/locales.json"
+            url = (
+                f"https://{self.creds['subdomain']}.zendesk.com"
+                f"/api/v2/locales.json"
+            )
             resp = self.session.get(url, timeout=API_CONFIG.TIMEOUT_SHORT)
             if resp.status_code == 200:
                 locs = resp.json().get('locales', [])
@@ -2993,7 +3274,8 @@ class ZendeskController:
         return {}
 
     def _apply_single_with_retry(
-        self, item: Dict[str, Any], l_map: Dict[str, int], log_callback: pyqtSignal = None
+        self, item: Dict[str, Any], l_map: Dict[str, int],
+        log_callback: pyqtSignal = None
     ) -> str:
         """Apply single item with retry logic."""
         last_error: Optional[Exception] = None
@@ -3022,7 +3304,8 @@ class ZendeskController:
         raise ZendeskAPIError("Unknown error after retries", 0)
 
     def _apply_single(
-        self, item: Dict[str, Any], l_map: Dict[str, int], log_callback: pyqtSignal = None
+        self, item: Dict[str, Any], l_map: Dict[str, int],
+        log_callback: pyqtSignal = None
     ) -> str:
         dc_id = item.get('dc_id')
         pt_id = l_map.get('pt-BR') or l_map.get('pt') or 1
@@ -3034,21 +3317,44 @@ class ZendeskController:
         is_en_default = (self.instance_default_locale == 'en-US')
 
         variants = [
-            {'locale_id': pt_id, 'default': not is_en_default, 'content': item.get('pt', '')},
-            {'locale_id': en_id, 'default': is_en_default, 'content': en_content},
+            {
+                'locale_id': pt_id, 'default': not is_en_default,
+                'content': item.get('pt', '')
+            },
+            {
+                'locale_id': en_id, 'default': is_en_default,
+                'content': en_content
+            },
             {'locale_id': es_id, 'default': False, 'content': es_content}
         ]
 
         if item.get('force_update') and dc_id:
-            url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/dynamic_content/items/{dc_id}.json"
-            resp = self.session.put(url, json={"item": {"variants": variants}}, timeout=API_CONFIG.TIMEOUT_LONG)
+            url = (
+                f"https://{self.creds['subdomain']}.zendesk.com"
+                f"/api/v2/dynamic_content/items/{dc_id}.json"
+            )
+            resp = self.session.put(
+                url, json={"item": {"variants": variants}},
+                timeout=API_CONFIG.TIMEOUT_LONG
+            )
             if not resp.ok:
                 raise parse_zendesk_error(resp)
         elif not dc_id and item.get('action') == 'CREATE':
             def_loc_id = en_id if is_en_default else pt_id
-            payload = {"item": {"name": item.get('dc_name', ''), "default_locale_id": def_loc_id, "variants": variants}}
-            url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/dynamic_content/items.json"
-            resp = self.session.post(url, json=payload, timeout=API_CONFIG.TIMEOUT_LONG)
+            payload = {
+                "item": {
+                    "name": item.get('dc_name', ''),
+                    "default_locale_id": def_loc_id,
+                    "variants": variants
+                }
+            }
+            url = (
+                f"https://{self.creds['subdomain']}.zendesk.com"
+                f"/api/v2/dynamic_content/items.json"
+            )
+            resp = self.session.post(
+                url, json=payload, timeout=API_CONFIG.TIMEOUT_LONG
+            )
             if resp.status_code == 201:
                 dc_id = resp.json()['item']['id']
             elif resp.status_code != 422:
@@ -3072,36 +3378,66 @@ class ZendeskController:
         return f"SKIPPED: {item.get('dc_name', 'unknown')}"
 
     def _update_field(self, item: Dict[str, Any], ph: str) -> str:
-        url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/ticket_fields/{item.get('id')}.json"
-        resp = self.session.put(url, json={"ticket_field": {"title": ph}}, timeout=API_CONFIG.TIMEOUT_LONG)
+        url = (
+            f"https://{self.creds['subdomain']}.zendesk.com"
+            f"/api/v2/ticket_fields/{item.get('id')}.json"
+        )
+        resp = self.session.put(
+            url, json={"ticket_field": {"title": ph}},
+            timeout=API_CONFIG.TIMEOUT_LONG
+        )
         if not resp.ok:
             raise parse_zendesk_error(resp)
         return f"SUCCESS: Field {item.get('dc_name', '')}"
 
     def _update_form(self, item: Dict[str, Any], ph: str) -> str:
-        url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/ticket_forms/{item.get('id')}.json"
-        resp = self.session.put(url, json={"ticket_form": {"display_name": ph}}, timeout=API_CONFIG.TIMEOUT_LONG)
+        url = (
+            f"https://{self.creds['subdomain']}.zendesk.com"
+            f"/api/v2/ticket_forms/{item.get('id')}.json"
+        )
+        resp = self.session.put(
+            url, json={"ticket_form": {"display_name": ph}},
+            timeout=API_CONFIG.TIMEOUT_LONG
+        )
         if not resp.ok:
             raise parse_zendesk_error(resp)
         return f"SUCCESS: Form {item.get('dc_name', '')}"
 
     def _update_category(self, item: Dict[str, Any], ph: str) -> str:
-        url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/help_center/categories/{item.get('id')}.json"
-        resp = self.session.put(url, json={"category": {"name": ph}}, timeout=API_CONFIG.TIMEOUT_LONG)
+        url = (
+            f"https://{self.creds['subdomain']}.zendesk.com"
+            f"/api/v2/help_center/categories/{item.get('id')}.json"
+        )
+        resp = self.session.put(
+            url, json={"category": {"name": ph}},
+            timeout=API_CONFIG.TIMEOUT_LONG
+        )
         if not resp.ok:
             raise parse_zendesk_error(resp)
         return f"SUCCESS: Category {item.get('dc_name', '')}"
 
     def _update_section(self, item: Dict[str, Any], ph: str) -> str:
-        url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/help_center/sections/{item.get('id')}.json"
-        resp = self.session.put(url, json={"section": {"name": ph}}, timeout=API_CONFIG.TIMEOUT_LONG)
+        url = (
+            f"https://{self.creds['subdomain']}.zendesk.com"
+            f"/api/v2/help_center/sections/{item.get('id')}.json"
+        )
+        resp = self.session.put(
+            url, json={"section": {"name": ph}},
+            timeout=API_CONFIG.TIMEOUT_LONG
+        )
         if not resp.ok:
             raise parse_zendesk_error(resp)
         return f"SUCCESS: Section {item.get('dc_name', '')}"
 
     def _update_article(self, item: Dict[str, Any], ph: str) -> str:
-        url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/help_center/articles/{item.get('id')}.json"
-        resp = self.session.put(url, json={"article": {"title": ph}}, timeout=API_CONFIG.TIMEOUT_LONG)
+        url = (
+            f"https://{self.creds['subdomain']}.zendesk.com"
+            f"/api/v2/help_center/articles/{item.get('id')}.json"
+        )
+        resp = self.session.put(
+            url, json={"article": {"title": ph}},
+            timeout=API_CONFIG.TIMEOUT_LONG
+        )
         if not resp.ok:
             raise parse_zendesk_error(resp)
         return f"SUCCESS: Article {item.get('dc_name', '')}"
@@ -3111,11 +3447,16 @@ class ZendeskController:
         if not parent_id:
             return f"SKIPPED: Option {item.get('dc_name', '')} - no parent_id"
         
-        url = f"https://{self.creds['subdomain']}.zendesk.com/api/v2/ticket_fields/{parent_id}.json"
+        url = (
+            f"https://{self.creds['subdomain']}.zendesk.com"
+            f"/api/v2/ticket_fields/{parent_id}.json"
+        )
         resp = self.session.get(url, timeout=API_CONFIG.TIMEOUT_LONG)
         if not resp.ok:
             raise parse_zendesk_error(resp)
-        fresh_options = resp.json().get('ticket_field', {}).get('custom_field_options', [])
+        fresh_options = resp.json().get(
+            'ticket_field', {}
+        ).get('custom_field_options', [])
         found = False
         item_id = item.get('id')
         for opt in fresh_options:
@@ -3125,7 +3466,8 @@ class ZendeskController:
                 break
         if found:
             resp = self.session.put(
-                url, json={"ticket_field": {"custom_field_options": fresh_options}},
+                url,
+                json={"ticket_field": {"custom_field_options": fresh_options}},
                 timeout=API_CONFIG.TIMEOUT_LONG
             )
             if not resp.ok:
@@ -3134,7 +3476,8 @@ class ZendeskController:
         return f"SKIPPED: Option {item.get('dc_name', '')} not found"
 
     def load_backup_thread(
-        self, progress_callback: pyqtSignal, log_callback: pyqtSignal, filepath: str
+        self, progress_callback: pyqtSignal, log_callback: pyqtSignal,
+        filepath: str
     ) -> List[Dict[str, Any]]:
         progress_callback.emit(0, 0, "Reading file...")
         if not os.path.exists(filepath):
@@ -3151,7 +3494,8 @@ class ZendeskController:
             raise Exception(f"Failed to load backup: {e}")
 
     def perform_restore_from_data(
-        self, items: List[Dict[str, Any]], progress_callback: pyqtSignal, log_callback: pyqtSignal
+        self, items: List[Dict[str, Any]], progress_callback: pyqtSignal,
+        log_callback: pyqtSignal
     ) -> str:
         self.reset_stop()
         self._rate_limiter.reset()
@@ -3164,11 +3508,18 @@ class ZendeskController:
         success_count = 0
         error_count = 0
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=API_CONFIG.THREAD_POOL_SIZE) as executor:
-            futures = {executor.submit(self._restore_single_with_retry, item): item for item in items}
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=API_CONFIG.THREAD_POOL_SIZE
+        ) as executor:
+            futures = {
+                executor.submit(self._restore_single_with_retry, item): item
+                for item in items
+            }
             
             try:
-                for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                for i, future in enumerate(
+                    concurrent.futures.as_completed(futures)
+                ):
                     if self.stop_requested:
                         raise Exception("Operation Canceled")
                     
@@ -3179,7 +3530,10 @@ class ZendeskController:
                         if res.startswith("Restored"):
                             success_count += 1
                         eta = self._calc_eta(start_time, i + 1, total)
-                        progress_callback.emit(i + 1, total, f"Restored: {i + 1}/{total} | ETA: {eta}")
+                        progress_callback.emit(
+                            i + 1, total,
+                            f"Restored: {i + 1}/{total} | ETA: {eta}"
+                        )
                     except concurrent.futures.CancelledError:
                         pass
                     except Exception as e:
@@ -3233,31 +3587,55 @@ class ZendeskController:
 
         if item_type == 'field':
             url = f"https://{sub}.zendesk.com/api/v2/ticket_fields/{item_id}.json"
-            resp = self.session.put(url, json={"ticket_field": {"title": orig}}, timeout=API_CONFIG.TIMEOUT_LONG)
+            resp = self.session.put(
+                url, json={"ticket_field": {"title": orig}},
+                timeout=API_CONFIG.TIMEOUT_LONG
+            )
             if not resp.ok:
                 raise parse_zendesk_error(resp)
             return f"Restored Field: {orig[:50]}"
         elif item_type == 'form':
             url = f"https://{sub}.zendesk.com/api/v2/ticket_forms/{item_id}.json"
-            resp = self.session.put(url, json={"ticket_form": {"display_name": orig}}, timeout=API_CONFIG.TIMEOUT_LONG)
+            resp = self.session.put(
+                url, json={"ticket_form": {"display_name": orig}},
+                timeout=API_CONFIG.TIMEOUT_LONG
+            )
             if not resp.ok:
                 raise parse_zendesk_error(resp)
             return f"Restored Form: {orig[:50]}"
         elif item_type == 'category':
-            url = f"https://{sub}.zendesk.com/api/v2/help_center/categories/{item_id}.json"
-            resp = self.session.put(url, json={"category": {"name": orig}}, timeout=API_CONFIG.TIMEOUT_LONG)
+            url = (
+                f"https://{sub}.zendesk.com"
+                f"/api/v2/help_center/categories/{item_id}.json"
+            )
+            resp = self.session.put(
+                url, json={"category": {"name": orig}},
+                timeout=API_CONFIG.TIMEOUT_LONG
+            )
             if not resp.ok:
                 raise parse_zendesk_error(resp)
             return f"Restored Category: {orig[:50]}"
         elif item_type == 'section':
-            url = f"https://{sub}.zendesk.com/api/v2/help_center/sections/{item_id}.json"
-            resp = self.session.put(url, json={"section": {"name": orig}}, timeout=API_CONFIG.TIMEOUT_LONG)
+            url = (
+                f"https://{sub}.zendesk.com"
+                f"/api/v2/help_center/sections/{item_id}.json"
+            )
+            resp = self.session.put(
+                url, json={"section": {"name": orig}},
+                timeout=API_CONFIG.TIMEOUT_LONG
+            )
             if not resp.ok:
                 raise parse_zendesk_error(resp)
             return f"Restored Section: {orig[:50]}"
         elif item_type == 'article':
-            url = f"https://{sub}.zendesk.com/api/v2/help_center/articles/{item_id}.json"
-            resp = self.session.put(url, json={"article": {"title": orig}}, timeout=API_CONFIG.TIMEOUT_LONG)
+            url = (
+                f"https://{sub}.zendesk.com"
+                f"/api/v2/help_center/articles/{item_id}.json"
+            )
+            resp = self.session.put(
+                url, json={"article": {"title": orig}},
+                timeout=API_CONFIG.TIMEOUT_LONG
+            )
             if not resp.ok:
                 raise parse_zendesk_error(resp)
             return f"Restored Article: {orig[:50]}"
@@ -3265,10 +3643,15 @@ class ZendeskController:
             parent_id = item.get('parent_id')
             if not parent_id:
                 return f"Skipped Option: {item_id} - no parent_id"
-            url = f"https://{sub}.zendesk.com/api/v2/ticket_fields/{parent_id}.json"
+            url = (
+                f"https://{sub}.zendesk.com"
+                f"/api/v2/ticket_fields/{parent_id}.json"
+            )
             resp = self.session.get(url, timeout=API_CONFIG.TIMEOUT_LONG)
             if resp.ok:
-                opts = resp.json().get('ticket_field', {}).get('custom_field_options', [])
+                opts = resp.json().get(
+                    'ticket_field', {}
+                ).get('custom_field_options', [])
                 found = False
                 for o in opts:
                     if str(o.get('id')) == str(item_id):
@@ -3277,7 +3660,10 @@ class ZendeskController:
                         break
                 if found:
                     resp = self.session.put(
-                        url, json={"ticket_field": {"custom_field_options": opts}},
+                        url,
+                        json={
+                            "ticket_field": {"custom_field_options": opts}
+                        },
                         timeout=API_CONFIG.TIMEOUT_LONG
                     )
                     if not resp.ok:
@@ -3342,11 +3728,14 @@ class ModernSidebar(QFrame):
         self.layout.setSpacing(4)
         self.btns: List[QPushButton] = []
 
-        labels = ["Start", "Scan Data", "Translate", "Preview", "Apply", "Rollback"]
+        labels = [
+            "Start", "Scan Data", "Translate", "Preview", "Apply", "Rollback"
+        ]
         for i, txt in enumerate(labels):
             btn = QPushButton(f"{i + 1}. {txt}")
             btn.setObjectName("StepBtn")
             btn.setCheckable(True)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             if i > 0:
                 btn.setEnabled(False)
             btn.clicked.connect(lambda _, x=i: self.parent_wiz.goto(x))
@@ -3434,7 +3823,9 @@ class EmbeddedStatusBar(QFrame):
 
         self.stats_lbl = QLabel("")
         self.stats_lbl.setObjectName("StatsText")
-        self.stats_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.stats_lbl.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
 
         self.p_bar = QProgressBar()
         self.p_bar.setFixedWidth(180)
@@ -3469,7 +3860,9 @@ class EmbeddedStatusBar(QFrame):
             elapsed = time.time() - self._start_time
             self.elapsed_lbl.setText(f"⏱ {self._format_elapsed(elapsed)}")
 
-    def show_progress(self, current: int, total: int, msg_main: str, msg_detail: str):
+    def show_progress(
+        self, current: int, total: int, msg_main: str, msg_detail: str
+    ):
         self.setVisible(True)
         self.status_lbl.setText(msg_main)
         self.stats_lbl.setText(msg_detail)
@@ -3619,7 +4012,9 @@ def create_form_row(
     label = QLabel(label_text)
     label.setObjectName("FieldLabel")
     label.setFixedWidth(label_width)
-    label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    label.setAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    )
     
     row.addWidget(label)
     row.addWidget(widget, 1)
@@ -3755,9 +4150,10 @@ class ZendeskWizard(QMainWindow):
                 self.controller.stop()
                 self.worker.cancel()
                 self.worker.quit()
-                if not self.worker.wait(2000):
+                # Short timeout to avoid blocking UI
+                if not self.worker.wait(500):
                     self.worker.terminate()
-                    self.worker.wait(1000)
+                    self.worker.wait(200)
         
         # Clean up controller resources
         self.controller.cleanup()
@@ -3773,15 +4169,21 @@ class ZendeskWizard(QMainWindow):
         
         # Write to log file
         try:
-            folder = self.controller.backup_folder if self.controller.backup_folder else os.getcwd()
+            folder = (
+                self.controller.backup_folder
+                if self.controller.backup_folder else os.getcwd()
+            )
             path = os.path.join(folder, "process_log.txt")
             with open(path, "a", encoding="utf-8") as f:
-                f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+                f.write(
+                    f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
+                )
         except Exception as e:
             logger.debug(f"Could not write to log file: {e}")
 
     def goto(self, idx: int):
-        if 0 <= idx < len(self.sidebar.btns) and self.sidebar.btns[idx].isEnabled():
+        if (0 <= idx < len(self.sidebar.btns)
+                and self.sidebar.btns[idx].isEnabled()):
             self.stack.setCurrentIndex(idx)
             self.sidebar.set_active(idx)
             if idx == 2:
@@ -3799,7 +4201,9 @@ class ZendeskWizard(QMainWindow):
         self.btn_load_backup.setEnabled(not locked)
         self.btn_clear_log.setEnabled(not locked)
         self.btn_clear_cache.setEnabled(not locked)
-        self.btn_execute_rollback.setEnabled(not locked and len(self.backup_candidates) > 0)
+        self.btn_execute_rollback.setEnabled(
+            not locked and len(self.backup_candidates) > 0
+        )
 
     def stop_process(self):
         self.controller.stop()
@@ -3838,7 +4242,7 @@ class ZendeskWizard(QMainWindow):
         if worker is None:
             return
         
-        # Disconnect specific connections we made, not all
+        # Disconnect specific connections we made
         try:
             worker.progress.disconnect()
         except (TypeError, RuntimeError):
@@ -3870,7 +4274,10 @@ class ZendeskWizard(QMainWindow):
         self._init_page_rollback()
 
     def _init_page_config(self):
-        page = WizardPage("Configuration", "Setup your Zendesk credentials and preferences.")
+        page = WizardPage(
+            "Configuration",
+            "Setup your Zendesk credentials and preferences."
+        )
 
         # Subdomain row
         self.in_sub = QLineEdit()
@@ -3946,7 +4353,10 @@ class ZendeskWizard(QMainWindow):
         self.stack.addWidget(page)
 
     def _init_page_scan(self):
-        page = WizardPage("Scan Data", "Select what to scan from your Zendesk instance.")
+        page = WizardPage(
+            "Scan Data",
+            "Select what to scan from your Zendesk instance."
+        )
 
         # Options in a horizontal group
         options_group = QGroupBox("Scan Options")
@@ -3975,7 +4385,9 @@ class ZendeskWizard(QMainWindow):
         self.scan_summary_box.setReadOnly(True)
         self.scan_summary_box.setObjectName("InfoBox")
         self.scan_summary_box.setMinimumHeight(120)
-        self.scan_summary_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.scan_summary_box.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         page.add_widget(self.scan_summary_box, 1)
 
         # Button
@@ -3991,7 +4403,10 @@ class ZendeskWizard(QMainWindow):
 
     def _init_page_translate(self):
         """Initialize the redesigned Translation page."""
-        page = WizardPage("Translate", "Configure translation settings and run the translation.")
+        page = WizardPage(
+            "Translate",
+            "Configure translation settings and run the translation."
+        )
 
         # Status summary banner
         self.trans_summary_frame = QFrame()
@@ -4000,7 +4415,9 @@ class ZendeskWizard(QMainWindow):
         trans_summary_layout = QHBoxLayout(self.trans_summary_frame)
         trans_summary_layout.setContentsMargins(16, 12, 16, 12)
         
-        self.lbl_trans_summary = QLabel("No scan data loaded. Run a scan first.")
+        self.lbl_trans_summary = QLabel(
+            "No scan data loaded. Run a scan first."
+        )
         self.lbl_trans_summary.setObjectName("TransSummaryLabel")
         self.lbl_trans_summary.setWordWrap(True)
         trans_summary_layout.addWidget(self.lbl_trans_summary)
@@ -4015,13 +4432,17 @@ class ZendeskWizard(QMainWindow):
         
         # Provider selection
         self.combo_provider = QComboBox()
-        self.combo_provider.addItems(["Google Web (Free)", "Google Cloud Translation API"])
+        self.combo_provider.addItems([
+            "Google Web (Free)", "Google Cloud Translation API"
+        ])
         self.combo_provider.setMinimumHeight(UI_CONFIG.COMBO_MIN_HEIGHT)
         page.add_layout(create_form_row("Provider", self.combo_provider))
 
         # API Key
         self.in_api_key = QLineEdit()
-        self.in_api_key.setPlaceholderText("Required only for Google Cloud Translation API")
+        self.in_api_key.setPlaceholderText(
+            "Required only for Google Cloud Translation API"
+        )
         self.in_api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.in_api_key.setMinimumHeight(UI_CONFIG.INPUT_MIN_HEIGHT)
         page.add_layout(create_form_row("API Key", self.in_api_key))
@@ -4032,17 +4453,21 @@ class ZendeskWizard(QMainWindow):
         # Options section
         page.add_widget(create_section_header("Options"))
 
-        # Options container with left padding to align with form fields
+        # Options container with left padding
         options_container = QWidget()
         options_layout = QVBoxLayout(options_container)
         options_layout.setContentsMargins(UI_CONFIG.LABEL_WIDTH + 12, 0, 0, 0)
         options_layout.setSpacing(8)
 
-        self.chk_protect_acronyms = QCheckBox("Protect Acronyms (API, ID, CST, SKU, etc.)")
+        self.chk_protect_acronyms = QCheckBox(
+            "Protect Acronyms (API, ID, CST, SKU, etc.)"
+        )
         self.chk_protect_acronyms.setChecked(True)
         options_layout.addWidget(self.chk_protect_acronyms)
 
-        self.chk_force_retranslate = QCheckBox("Force Retranslate All (ignore existing translations)")
+        self.chk_force_retranslate = QCheckBox(
+            "Force Retranslate All (ignore existing translations)"
+        )
         options_layout.addWidget(self.chk_force_retranslate)
 
         page.add_widget(options_container)
@@ -4110,7 +4535,9 @@ class ZendeskWizard(QMainWindow):
         cols = ["Action", "Update", "Context", "Type", "Name", "PT", "EN", "ES"]
         self.table = QTableWidget(0, len(cols))
         self.table.setHorizontalHeaderLabels(cols)
-        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
 
         h = self.table.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -4122,7 +4549,9 @@ class ZendeskWizard(QMainWindow):
         h.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         h.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
 
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
         self.table.setAlternatingRowColors(True)
         page.add_widget(self.table, 1)
 
@@ -4173,7 +4602,9 @@ class ZendeskWizard(QMainWindow):
         self.result_box = QTextEdit()
         self.result_box.setObjectName("InfoBox")
         self.result_box.setReadOnly(True)
-        self.result_box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.result_box.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         page.add_widget(self.result_box, 1)
 
         # Button
@@ -4188,7 +4619,10 @@ class ZendeskWizard(QMainWindow):
         self.stack.addWidget(page)
 
     def _init_page_rollback(self):
-        page = WizardPage("Rollback", "Restore original values from a backup file.")
+        page = WizardPage(
+            "Rollback",
+            "Restore original values from a backup file."
+        )
 
         # Load button
         load_row = QHBoxLayout()
@@ -4203,7 +4637,9 @@ class ZendeskWizard(QMainWindow):
         cols = ["Context", "Type", "Name", "Original Text", "EN", "ES"]
         self.backup_table = QTableWidget(0, len(cols))
         self.backup_table.setHorizontalHeaderLabels(cols)
-        self.backup_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.backup_table.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
 
         h = self.backup_table.horizontalHeader()
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -4231,19 +4667,27 @@ class ZendeskWizard(QMainWindow):
         summary = self.controller.get_translation_summary()
         if summary['total'] == 0:
             self.lbl_trans_summary.setText(
-                "No scan data loaded. Go to Step 2 (Scan Data) to scan your Zendesk instance."
+                "No scan data loaded. Go to Step 2 (Scan Data) to scan "
+                "your Zendesk instance."
             )
             return
         
         # Use HTML escaping for safety
         text = (
-            f"<b>Total Items:</b> {escape_html(str(summary['total']))} &nbsp;│&nbsp; "
-            f"<b>From Zendesk DC:</b> {escape_html(str(summary['from_dc']))} &nbsp;│&nbsp; "
-            f"<b>Need Translation:</b> {escape_html(str(summary['needs_translation']))} &nbsp;│&nbsp; "
-            f"<b>Already Complete:</b> {escape_html(str(summary['has_existing']))}"
+            f"<b>Total Items:</b> {escape_html(str(summary['total']))} "
+            f"&nbsp;│&nbsp; "
+            f"<b>From Zendesk DC:</b> {escape_html(str(summary['from_dc']))} "
+            f"&nbsp;│&nbsp; "
+            f"<b>Need Translation:</b> "
+            f"{escape_html(str(summary['needs_translation']))} &nbsp;│&nbsp; "
+            f"<b>Already Complete:</b> "
+            f"{escape_html(str(summary['has_existing']))}"
         )
         if summary.get('failed', 0) > 0:
-            text += f" &nbsp;│&nbsp; <b style='color:#991B1B;'>Failed:</b> {escape_html(str(summary['failed']))}"
+            text += (
+                f" &nbsp;│&nbsp; <b style='color:#991B1B;'>Failed:</b> "
+                f"{escape_html(str(summary['failed']))}"
+            )
         
         self.lbl_trans_summary.setText(text)
 
@@ -4277,7 +4721,9 @@ class ZendeskWizard(QMainWindow):
                 self.in_tok.setText(d.get('token', ''))
                 self.in_rollback.setText(d.get('backup_path', ''))
                 self.in_api_key.setText(d.get('google_api_key', ''))
-                self.chk_protect_acronyms.setChecked(d.get('protect_acronyms', True))
+                self.chk_protect_acronyms.setChecked(
+                    d.get('protect_acronyms', True)
+                )
                 self.spin_cache.setValue(d.get('cache_expiry_days', 30))
                 self.log_msg(f"Profile loaded: {f}")
             else:
@@ -4337,7 +4783,9 @@ class ZendeskWizard(QMainWindow):
     def on_clear_cache_finished(self, success: bool, result: object):
         self.state_manager.force_reset()
         self.lock_ui(False)
-        self.status_bar.finish("Cache Cleared" if success else "Failed", success)
+        self.status_bar.finish(
+            "Cache Cleared" if success else "Failed", success
+        )
         if success:
             self.log_msg("Cache cleared.")
         else:
@@ -4360,7 +4808,9 @@ class ZendeskWizard(QMainWindow):
             'arts': self.chk_scan_arts.isChecked()
         }
         if not any(config.values()):
-            QMessageBox.warning(self, "Warning", "Select at least one item to scan.")
+            QMessageBox.warning(
+                self, "Warning", "Select at least one item to scan."
+            )
             return
 
         self._cleanup_worker()
@@ -4372,7 +4822,9 @@ class ZendeskWizard(QMainWindow):
                 lambda p, l: self.controller.scan_and_analyze(p, l, config)
             )
             self.worker.progress.connect(
-                lambda c, t, m: self.status_bar.show_progress(c, t, "Scanning...", m)
+                lambda c, t, m: self.status_bar.show_progress(
+                    c, t, "Scanning...", m
+                )
             )
             self.worker.log.connect(self.log_msg)
             self.worker.result.connect(self.on_scan_finished)
@@ -4394,18 +4846,30 @@ class ZendeskWizard(QMainWindow):
         self.status_bar.finish("Scan Complete", True)
         stats = result
         work_items = self.controller.work_items
-        from_dc = sum(1 for i in work_items if i.get('source') == SOURCE_ZENDESK_DC)
+        from_dc = sum(
+            1 for i in work_items if i.get('source') == SOURCE_ZENDESK_DC
+        )
         has_trans = sum(1 for i in work_items if i.get('en') and i.get('es'))
 
         report = f"""
         <h3>Scan Complete</h3>
         <table>
-        <tr><td><b>Fields:</b></td><td>{escape_html(str(stats.get('valid_fields', 0)))}</td></tr>
-        <tr><td><b>Forms:</b></td><td>{escape_html(str(stats.get('valid_forms', 0)))}</td></tr>
-        <tr><td><b>HC Items:</b></td><td>{escape_html(str(stats.get('valid_cats', 0) + stats.get('valid_sects', 0) + stats.get('valid_arts', 0)))}</td></tr>
-        <tr><td><b>From DC:</b></td><td>{escape_html(str(from_dc))}</td></tr>
-        <tr><td><b>With EN+ES:</b></td><td>{escape_html(str(has_trans))}</td></tr>
-        <tr><td><b>Total Tasks:</b></td><td><b>{escape_html(str(len(work_items)))}</b></td></tr>
+        <tr><td><b>Fields:</b></td>
+            <td>{escape_html(str(stats.get('valid_fields', 0)))}</td></tr>
+        <tr><td><b>Forms:</b></td>
+            <td>{escape_html(str(stats.get('valid_forms', 0)))}</td></tr>
+        <tr><td><b>HC Items:</b></td>
+            <td>{escape_html(str(
+                stats.get('valid_cats', 0) +
+                stats.get('valid_sects', 0) +
+                stats.get('valid_arts', 0)
+            ))}</td></tr>
+        <tr><td><b>From DC:</b></td>
+            <td>{escape_html(str(from_dc))}</td></tr>
+        <tr><td><b>With EN+ES:</b></td>
+            <td>{escape_html(str(has_trans))}</td></tr>
+        <tr><td><b>Total Tasks:</b></td>
+            <td><b>{escape_html(str(len(work_items)))}</b></td></tr>
         </table>
         """
         self.scan_summary_box.setHtml(report)
@@ -4435,27 +4899,38 @@ class ZendeskWizard(QMainWindow):
 
                 if source == SOURCE_ZENDESK_DC:
                     items_from_dc += 1
-                if en_source == SOURCE_TRANSLATED or es_source == SOURCE_TRANSLATED:
+                if (en_source == SOURCE_TRANSLATED
+                        or es_source == SOURCE_TRANSLATED):
                     items_translated += 1
                 if en_source == SOURCE_FAILED or es_source == SOURCE_FAILED:
                     items_failed += 1
 
-                self.table.setItem(r, 0, QTableWidgetItem(item.get('action', '')))
+                self.table.setItem(
+                    r, 0, QTableWidgetItem(item.get('action', ''))
+                )
 
                 chk_widget = QWidget()
                 chk_layout = QHBoxLayout(chk_widget)
                 chk_layout.setContentsMargins(0, 0, 0, 0)
                 chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 chk = QCheckBox()
-                is_link = item.get('action') == 'LINK' and bool(item.get('dc_id'))
+                is_link = (
+                    item.get('action') == 'LINK' and bool(item.get('dc_id'))
+                )
                 chk.setChecked(is_link)
                 chk.setEnabled(is_link)
                 chk_layout.addWidget(chk)
                 self.table.setCellWidget(r, 1, chk_widget)
 
-                self.table.setItem(r, 2, QTableWidgetItem(item.get('context', '')))
-                self.table.setItem(r, 3, QTableWidgetItem(item.get('type', '')))
-                self.table.setItem(r, 4, QTableWidgetItem(item.get('dc_name', '')))
+                self.table.setItem(
+                    r, 2, QTableWidgetItem(item.get('context', ''))
+                )
+                self.table.setItem(
+                    r, 3, QTableWidgetItem(item.get('type', ''))
+                )
+                self.table.setItem(
+                    r, 4, QTableWidgetItem(item.get('dc_name', ''))
+                )
 
                 pt_item = QTableWidgetItem(item.get('pt', ''))
                 pt_item.setBackground(QBrush(get_source_color(pt_source)))
@@ -4492,7 +4967,11 @@ class ZendeskWizard(QMainWindow):
         for r in range(self.table.rowCount()):
             ctx_item = self.table.item(r, 2)
             ctx = ctx_item.text() if ctx_item else ""
-            visible = (ctx == "Ticket" and show_ticket) or (ctx == "Help Center" and show_hc) or ctx == "Unknown"
+            visible = (
+                (ctx == "Ticket" and show_ticket)
+                or (ctx == "Help Center" and show_hc)
+                or ctx == "Unknown"
+            )
             self.table.setRowHidden(r, not visible)
 
     def run_trans(self):
@@ -4507,7 +4986,9 @@ class ZendeskWizard(QMainWindow):
             msg.setIcon(QMessageBox.Icon.Warning)
             msg.setWindowTitle("Missing API Key")
             msg.setText("Google Cloud API requires an API key.")
-            btn_web = msg.addButton("Use Free Web", QMessageBox.ButtonRole.AcceptRole)
+            btn_web = msg.addButton(
+                "Use Free Web", QMessageBox.ButtonRole.AcceptRole
+            )
             msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
             msg.exec()
             if msg.clickedButton() == btn_web:
@@ -4521,18 +5002,27 @@ class ZendeskWizard(QMainWindow):
         self.lock_ui(True)
 
         self.controller.set_translation_config(
-            provider, key, self.chk_protect_acronyms.isChecked(), self.spin_cache.value()
+            provider, key, self.chk_protect_acronyms.isChecked(),
+            self.spin_cache.value()
         )
 
         with self._worker_lock:
             self.worker = StepWorker(
-                lambda p, l: self.controller.perform_translation(p, l, self.chk_force_retranslate.isChecked())
+                lambda p, l: self.controller.perform_translation(
+                    p, l, self.chk_force_retranslate.isChecked()
+                )
             )
             self.worker.progress.connect(
-                lambda c, t, m: self.status_bar.show_progress(c, t, "Translating...", m)
+                lambda c, t, m: self.status_bar.show_progress(
+                    c, t, "Translating...", m
+                )
             )
             self.worker.log.connect(self.log_msg)
-            self.worker.result.connect(lambda s, m: self.finish_step(s, m if not s else "Translation Done", 4))
+            self.worker.result.connect(
+                lambda s, m: self.finish_step(
+                    s, m if not s else "Translation Done", 4
+                )
+            )
             self.worker.finished.connect(self.status_bar.reset_ui)
             self.worker.start()
 
@@ -4555,8 +5045,15 @@ class ZendeskWizard(QMainWindow):
         do_link = self.chk_link.isChecked()
         work_items = self.controller.work_items
 
+        # Validate table matches work_items
+        if self.table.rowCount() != len(work_items):
+            self.log_msg("Warning: Table out of sync, refreshing preview...")
+            self.populate_preview()
+            work_items = self.controller.work_items
+
         for r, item in enumerate(work_items):
             if r >= self.table.rowCount():
+                self.log_msg(f"Warning: Skipping item {r} - table row missing")
                 continue
             item_copy = item.copy()
             chk_widget = self.table.cellWidget(r, 1)
@@ -4570,10 +5067,20 @@ class ZendeskWizard(QMainWindow):
             if (is_create and do_create) or (not is_create and do_link):
                 items.append(item_copy)
 
+        if not items:
+            self.log_msg("No items selected for processing")
+            self.lock_ui(False)
+            self.status_bar.finish("No items to process", False)
+            return
+
         with self._worker_lock:
-            self.worker = StepWorker(lambda p, l: self.controller.execute_changes(items, p, l))
+            self.worker = StepWorker(
+                lambda p, l: self.controller.execute_changes(items, p, l)
+            )
             self.worker.progress.connect(
-                lambda c, t, m: self.status_bar.show_progress(c, t, "Applying...", m)
+                lambda c, t, m: self.status_bar.show_progress(
+                    c, t, "Applying...", m
+                )
             )
             self.worker.log.connect(self.log_msg)
             self.worker.result.connect(self.on_apply_finished)
@@ -4604,16 +5111,24 @@ class ZendeskWizard(QMainWindow):
             report += "\n\nFailed Items:"
             for err in f[:10]:
                 if isinstance(err, dict):
-                    report += f"\n• {escape_html(str(err.get('item', '')))}: {escape_html(str(err.get('error', '')))}"
+                    report += (
+                        f"\n• {escape_html(str(err.get('item', '')))}: "
+                        f"{escape_html(str(err.get('error', '')))}"
+                    )
             if len(f) > 10:
                 report += f"\n... and {len(f) - 10} more"
         report += f"\n\nBackup: {backup}"
         self.result_box.setText(report)
 
         if f:
-            QMessageBox.warning(self, "Completed with Errors", f"Success: {len(s)}, Failed: {len(f)}")
+            QMessageBox.warning(
+                self, "Completed with Errors",
+                f"Success: {len(s)}, Failed: {len(f)}"
+            )
         else:
-            QMessageBox.information(self, "Success", "All changes applied successfully.")
+            QMessageBox.information(
+                self, "Success", "All changes applied successfully."
+            )
 
     def load_backup_file(self):
         if self.state_manager.is_busy:
@@ -4654,16 +5169,32 @@ class ZendeskWizard(QMainWindow):
         self.backup_table.setRowCount(len(self.backup_candidates))
 
         for r, item in enumerate(self.backup_candidates):
-            self.backup_table.setItem(r, 0, QTableWidgetItem(item.get('context', '')))
-            self.backup_table.setItem(r, 1, QTableWidgetItem(item.get('type', '')))
-            self.backup_table.setItem(r, 2, QTableWidgetItem(item.get('dc_name', '')))
-            self.backup_table.setItem(r, 3, QTableWidgetItem(item.get('original_text', '')))
-            self.backup_table.setItem(r, 4, QTableWidgetItem(item.get('en', '')))
-            self.backup_table.setItem(r, 5, QTableWidgetItem(item.get('es', '')))
+            self.backup_table.setItem(
+                r, 0, QTableWidgetItem(item.get('context', ''))
+            )
+            self.backup_table.setItem(
+                r, 1, QTableWidgetItem(item.get('type', ''))
+            )
+            self.backup_table.setItem(
+                r, 2, QTableWidgetItem(item.get('dc_name', ''))
+            )
+            self.backup_table.setItem(
+                r, 3, QTableWidgetItem(item.get('original_text', ''))
+            )
+            self.backup_table.setItem(
+                r, 4, QTableWidgetItem(item.get('en', ''))
+            )
+            self.backup_table.setItem(
+                r, 5, QTableWidgetItem(item.get('es', ''))
+            )
 
         self.btn_execute_rollback.setEnabled(True)
-        self.status_bar.finish(f"Loaded {len(self.backup_candidates)} items", True)
-        self.log_msg(f"Loaded {len(self.backup_candidates)} items from backup.")
+        self.status_bar.finish(
+            f"Loaded {len(self.backup_candidates)} items", True
+        )
+        self.log_msg(
+            f"Loaded {len(self.backup_candidates)} items from backup."
+        )
 
     def run_rollback(self):
         if self.state_manager.is_busy:
@@ -4680,13 +5211,21 @@ class ZendeskWizard(QMainWindow):
 
         with self._worker_lock:
             self.worker = StepWorker(
-                lambda p, l: self.controller.perform_restore_from_data(self.backup_candidates, p, l)
+                lambda p, l: self.controller.perform_restore_from_data(
+                    self.backup_candidates, p, l
+                )
             )
             self.worker.progress.connect(
-                lambda c, t, m: self.status_bar.show_progress(c, t, "Restoring...", m)
+                lambda c, t, m: self.status_bar.show_progress(
+                    c, t, "Restoring...", m
+                )
             )
             self.worker.log.connect(self.log_msg)
-            self.worker.result.connect(lambda s, m: self.finish_step(s, m if not s else "Rollback Complete", 0))
+            self.worker.result.connect(
+                lambda s, m: self.finish_step(
+                    s, m if not s else "Rollback Complete", 0
+                )
+            )
             self.worker.finished.connect(self.status_bar.reset_ui)
             self.worker.start()
 
