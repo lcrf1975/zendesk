@@ -182,7 +182,7 @@ class MigrationLogic:
 
     def log_rollback(self, item_type, item_id, item_name):
         try:
-            # Ensure directory exists before writing
+            # FIX: Ensure directory exists before writing
             directory = os.path.dirname(self.rollback_file)
             if directory and not os.path.exists(directory):
                 os.makedirs(directory)
@@ -232,11 +232,16 @@ class MigrationLogic:
             for attr in ['required', 'required_in_portal', 'visible_in_portal', 
                          'editable_in_portal', 'title_in_portal', 'agent_description', 'regexp_for_validation']:
                 
-                # CRITICAL FIX: Skip empty regex to prevent 422 error on Tagger fields
                 if attr in field:
                     val = field[attr]
+                    # Paranoid cleaning: Strip strings, treat whitespace as empty
+                    if isinstance(val, str):
+                        val = val.strip()
+                    
+                    # CRITICAL FIX: Explicitly exclude empty regex
                     if attr == 'regexp_for_validation' and not val:
                         continue 
+                        
                     field_data[attr] = val
 
         elif object_key in ['user_field', 'organization_field']:
@@ -245,6 +250,7 @@ class MigrationLogic:
             
             if 'regexp_for_validation' in field:
                 val = field['regexp_for_validation']
+                if isinstance(val, str): val = val.strip()
                 if val:
                     field_data['regexp_for_validation'] = val
 
@@ -369,6 +375,7 @@ class ZendeskMigratorApp:
         rb_ctrl_frame = ttk.Frame(self.tab_rollback, padding=15)
         rb_ctrl_frame.pack(fill='x')
         
+        # Default visual path
         default_rb_path = os.path.join(os.path.expanduser("~"), "Downloads", "rollback_log.csv")
         
         ttk.Label(rb_ctrl_frame, text="Rollback Log File:").pack(side='left')
@@ -692,11 +699,11 @@ class ZendeskMigratorApp:
                         return
 
                     for row in reader:
-                        # Clean up row keys (optional, but good for safety)
-                        row = {k.strip(): v for k, v in row.items() if k}
+                        # PARANOID CLEANING: Strip ALL values
+                        row = {k.strip(): (v.strip() if v else '') for k, v in row.items() if k}
                         
                         # LOWERCASE FIX: Make import case-insensitive
-                        rtype = row['Type'].strip().lower()
+                        rtype = row['Type'].lower()
                         
                         if rtype == 'ticket_form':
                             forms.append({
