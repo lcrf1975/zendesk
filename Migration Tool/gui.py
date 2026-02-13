@@ -17,7 +17,7 @@ except:
     pass
 
 # ==========================================
-# 1. API CLIENT
+# 1. API CLIENT (Hardened + Verbose)
 # ==========================================
 
 class ZendeskClient:
@@ -177,11 +177,16 @@ class MigrationLogic:
     def __init__(self, logger_func, update_progress_func):
         self.log = logger_func
         self.progress = update_progress_func
-        # Initial default, will be overridden by UI/Config
-        self.rollback_file = os.path.join(os.path.expanduser("~"), "Downloads", "rollback_log.csv")
+        # Default fallback is User Home
+        self.rollback_file = os.path.join(os.path.expanduser("~"), "rollback_log.csv")
 
     def log_rollback(self, item_type, item_id, item_name):
         try:
+            # Ensure directory exists before writing
+            directory = os.path.dirname(self.rollback_file)
+            if directory and not os.path.exists(directory):
+                os.makedirs(directory)
+
             file_exists = os.path.isfile(self.rollback_file)
             
             with open(self.rollback_file, mode='a', newline='', encoding='utf-8') as file:
@@ -223,16 +228,25 @@ class MigrationLogic:
         if object_key == 'ticket_field':
             if field.get('tag'):
                 field_data['tag'] = field.get('tag')
+            
             for attr in ['required', 'required_in_portal', 'visible_in_portal', 
                          'editable_in_portal', 'title_in_portal', 'agent_description', 'regexp_for_validation']:
+                
+                # CRITICAL FIX: Skip empty regex to prevent 422 error on Tagger fields
                 if attr in field:
-                    field_data[attr] = field[attr]
+                    val = field[attr]
+                    if attr == 'regexp_for_validation' and not val:
+                        continue 
+                    field_data[attr] = val
 
         elif object_key in ['user_field', 'organization_field']:
             if field.get('key'):
                 field_data['key'] = field.get('key')
+            
             if 'regexp_for_validation' in field:
-                field_data['regexp_for_validation'] = field['regexp_for_validation']
+                val = field['regexp_for_validation']
+                if val:
+                    field_data['regexp_for_validation'] = val
 
         return {object_key: field_data}
 
@@ -355,7 +369,6 @@ class ZendeskMigratorApp:
         rb_ctrl_frame = ttk.Frame(self.tab_rollback, padding=15)
         rb_ctrl_frame.pack(fill='x')
         
-        # Default visual path
         default_rb_path = os.path.join(os.path.expanduser("~"), "Downloads", "rollback_log.csv")
         
         ttk.Label(rb_ctrl_frame, text="Rollback Log File:").pack(side='left')
@@ -666,8 +679,12 @@ class ZendeskMigratorApp:
             current_field = None
             
             try:
+                # IMPORTANT: Use 'utf-8-sig' to handle BOM automatically
                 with open(csv_path, 'r', encoding='utf-8-sig') as f:
                     reader = csv.DictReader(f)
+                    
+                    # Normalize headers to handle case sensitivity issues
+                    reader.fieldnames = [name.strip() for name in reader.fieldnames]
                     
                     required_headers = ['Type', 'Name']
                     if not all(h in reader.fieldnames for h in required_headers):
@@ -675,7 +692,10 @@ class ZendeskMigratorApp:
                         return
 
                     for row in reader:
+                        # Clean up row keys (optional, but good for safety)
                         row = {k.strip(): v for k, v in row.items() if k}
+                        
+                        # LOWERCASE FIX: Make import case-insensitive
                         rtype = row['Type'].strip().lower()
                         
                         if rtype == 'ticket_form':
@@ -692,7 +712,9 @@ class ZendeskMigratorApp:
                             if '(User)' in obj_val: obj_type = 'user_field'
                             elif '(Org)' in obj_val: obj_type = 'organization_field'
                             
+                            # CRITICAL FIX: MAP TAG COLUMN TO KEY FOR USER/ORG FIELDS
                             field_tag_or_key = row.get('Tag', '')
+                            
                             f_key = None
                             f_tag = None
                             
