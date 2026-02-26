@@ -1,0 +1,7 @@
+{
+  "app": {
+    "name": "Dynamic CO Manager",
+    "short_description": "Manage Zendesk Custom Objects dynamically.",
+    "long_description": "An interface to dynamically create, read, update, and resolve lookup fields for Zendesk Custom Objects."
+  }
+}
