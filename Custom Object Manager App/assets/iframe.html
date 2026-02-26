@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Dynamic CO Manager</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/combine/npm/@zendeskgarden/css-bedrock@7.0.21,npm/@zendeskgarden/css-utilities@4.3.0">
+  <link href="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.default.min.css" rel="stylesheet">
+  <link href="https://unpkg.com/tabulator-tables@5.5.0/dist/css/tabulator.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="main.css">
+</head>
+<body>
+  <div id="app-container">
+    
+    <div id="loader">
+      <div id="loader-text">Loading...</div>
+      <div class="progress-container">
+        <div class="progress-bar-indeterminate"></div>
+      </div>
+    </div>
+    
+    <div id="selector-view" style="display: none;"></div>
+    
+    <div id="table-view" style="display: none;">
+      
+      <div class="toolbar-header">
+        <div class="toolbar-title">
+          <h3 id="table-title">Dashboard</h3>
+          <span id="record-summary" class="record-summary"></span>
+        </div>
+        <div class="toolbar-actions">
+          <button id="btn-new-record" class="btn">Add New Record</button>
+          <button id="btn-back-selector" class="btn btn-secondary">Change Object</button>
+        </div>
+      </div>
+
+      <div class="toolbar-controls">
+        <div class="search-container">
+          <input type="text" id="table-search" placeholder="Search all fields..." class="search-input" />
+        </div>
+        <div class="column-controls">
+          <button id="btn-restore-columns" class="btn btn-secondary">Restore Columns</button>
+          <select id="column-selector" multiple placeholder="Select visible columns..."></select>
+        </div>
+      </div>
+
+      <div id="records-table"></div>
+    </div>
+
+    <div id="form-view" style="display: none;"></div>
+  </div>
+  
+  <script src="https://static.zdassets.com/zendesk_app_framework_sdk/2.0/zaf_sdk.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js"></script>
+  <script type="text/javascript" src="https://unpkg.com/tabulator-tables@5.5.0/dist/js/tabulator.min.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>
