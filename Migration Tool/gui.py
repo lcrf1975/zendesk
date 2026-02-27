@@ -1216,10 +1216,6 @@ class ZendeskMigratorApp:
         self.root = root
         self.root.title(f"Zendesk Migration Tool [v{self.VERSION}]")
 
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        self.root.geometry(f"{screen_width}x{screen_height}")
-
         self.source_data: Dict[str, List] = {}
         self.target_data: Dict[str, List] = {}
         self.analysis_results: Optional[AnalysisResults] = None
@@ -1244,12 +1240,38 @@ class ZendeskMigratorApp:
         self.log_queue: queue.Queue = queue.Queue()
         self.logic = MigrationLogic(self.log_with_level, self.update_progress)
 
+        # Center window AFTER UI is built
+        self._center_window()
+
         self.root.after(100, self.process_log_queue)
         self.init_config_path()
         self.log_with_level(
             f"[SYSTEM] App Ready (v{self.VERSION})",
             LogLevel.ALWAYS
         )
+
+    def _center_window(self) -> None:
+        """Center the application window on the screen using 90% of space."""
+        # Update to get accurate screen info
+        self.root.update_idletasks()
+
+        # Get screen dimensions
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        # Use 90% of screen space
+        window_width = int(screen_width * 0.9)
+        window_height = int(screen_height * 0.9)
+
+        # Calculate center position
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+
+        # Set minimum size
+        self.root.minsize(800, 600)
+
+        # Set geometry: WIDTHxHEIGHT+X+Y
+        self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
     def setup_ui(self) -> None:
         """Setup all UI components."""
@@ -3271,8 +3293,6 @@ class ZendeskMigratorApp:
 def main():
     """Application entry point."""
     root = tk.Tk()
-
-    root.minsize(800, 600)
 
     app = ZendeskMigratorApp(root)
 
