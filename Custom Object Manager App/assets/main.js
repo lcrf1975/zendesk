@@ -66,13 +66,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Helper for Tabulator Search
 function customFilter(data, filterParams) {
-  let match = false;
+  const search = filterParams.toLowerCase();
   for (let key in data) {
-    if (String(data[key]).toLowerCase().includes(filterParams.toLowerCase())) {
-      match = true;
+    const val = data[key];
+    if (val !== null && val !== undefined && typeof val !== 'object') {
+      if (String(val).toLowerCase().includes(search)) {
+        return true;
+      }
     }
   }
-  return match;
+  return false;
+}
+
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function switchView(activeViewId) {
@@ -108,7 +120,7 @@ function renderObjectSelector(objects) {
                 <select id="co-selector" placeholder="Search for an Object...">
                   <option value="">-- Choose an Object --</option>`;
   objects.forEach(obj => {
-    html += `<option value="${obj.key}">${obj.title_pluralized}</option>`;
+    html += `<option value="${escapeHtml(obj.key)}">${escapeHtml(obj.title_pluralized)}</option>`;
   });
   html += `</select></div>
            <button class="btn" id="load-co-btn">Load Object Dashboard</button>`;
@@ -181,10 +193,7 @@ async function loadTable(coKey) {
         hozAlign: "center", 
         resizable: false,
         formatter: function(cell) {
-          const activeData = cell.getTable().getData("active"); 
-          const rowId = cell.getData().id;
-          const index = activeData.findIndex(d => d.id === rowId);
-          return index >= 0 ? index + 1 : "";
+          return cell.getRow().getPosition(true);
         }
       },
       { title: "ID", field: "id", width: 80 },
@@ -288,13 +297,14 @@ async function loadTable(coKey) {
     }
 
     const colSelectEl = document.getElementById('column-selector');
-    colSelectEl.innerHTML = '';
+    let colOptionsHtml = '';
     columns.forEach(col => {
       if (col.field !== 'actions' && col.field !== 'custom_rownum') {
         const isSelected = col.visible ? 'selected' : '';
-        colSelectEl.innerHTML += `<option value="${col.field}" ${isSelected}>${col.title}</option>`;
+        colOptionsHtml += `<option value="${escapeHtml(col.field)}" ${isSelected}>${escapeHtml(col.title)}</option>`;
       }
     });
+    colSelectEl.innerHTML = colOptionsHtml;
 
     columnSelectorTS = new TomSelect('#column-selector', {
       plugins: ['remove_button'],
@@ -347,7 +357,7 @@ async function showForm(existingRecord = null) {
   switchView('loader');
   
   const isEdit = existingRecord !== null;
-  const formTitle = isEdit ? `Edit Record ${existingRecord.id}` : `Create new ${currentCoKey} record`;
+  const formTitle = isEdit ? `Edit Record ${escapeHtml(existingRecord.id)}` : `Create new ${escapeHtml(currentCoKey)} record`;
 
   try {
     let existingName = '';
@@ -369,7 +379,7 @@ async function showForm(existingRecord = null) {
 
     formHtml += `<div id="tab-content-details">
                    <form id="dynamic-form">
-                     <input type="hidden" name="record_id" value="${isEdit ? existingRecord.id : ''}" />
+                     <input type="hidden" name="record_id" value="${isEdit ? escapeHtml(existingRecord.id) : ''}" />
                      
                      <div class="form-actions-top">
                        <button type="submit" class="btn">${isEdit ? 'Update Record' : 'Save Record'}</button>
@@ -378,7 +388,7 @@ async function showForm(existingRecord = null) {
 
                      <div class="form-group">
                        <label>Record Name</label>
-                       <input type="text" name="name" value="${existingName}" required />
+                       <input type="text" name="name" value="${escapeHtml(existingName)}" required />
                      </div>`;
 
     const lookupFieldIds = [];
@@ -392,51 +402,51 @@ async function showForm(existingRecord = null) {
       formHtml += `<div class="form-group">`;
 
       if (field.type === 'text') {
-        formHtml += `<label>${field.title}</label>
-                     <input type="text" name="${field.key}" value="${fieldValue}" required="${field.required}" />`;
-      } 
+        formHtml += `<label>${escapeHtml(field.title)}</label>
+                     <input type="text" name="${escapeHtml(field.key)}" value="${escapeHtml(fieldValue)}" ${field.required ? 'required' : ''} />`;
+      }
       else if (field.type === 'textarea') {
-        formHtml += `<label>${field.title}</label>
-                     <textarea name="${field.key}" required="${field.required}" rows="3">${fieldValue}</textarea>`;
+        formHtml += `<label>${escapeHtml(field.title)}</label>
+                     <textarea name="${escapeHtml(field.key)}" ${field.required ? 'required' : ''} rows="3">${escapeHtml(fieldValue)}</textarea>`;
       }
       else if (field.type === 'integer') {
-        formHtml += `<label>${field.title}</label>
-                     <input type="number" step="1" name="${field.key}" value="${fieldValue}" required="${field.required}" />`;
+        formHtml += `<label>${escapeHtml(field.title)}</label>
+                     <input type="number" step="1" name="${escapeHtml(field.key)}" value="${escapeHtml(fieldValue)}" ${field.required ? 'required' : ''} />`;
       }
       else if (field.type === 'decimal') {
-        formHtml += `<label>${field.title}</label>
-                     <input type="number" step="any" name="${field.key}" value="${fieldValue}" required="${field.required}" />`;
+        formHtml += `<label>${escapeHtml(field.title)}</label>
+                     <input type="number" step="any" name="${escapeHtml(field.key)}" value="${escapeHtml(fieldValue)}" ${field.required ? 'required' : ''} />`;
       }
       else if (field.type === 'date') {
         const dateVal = fieldValue ? String(fieldValue).substring(0, 10) : '';
-        formHtml += `<label>${field.title}</label>
-                     <input type="date" name="${field.key}" value="${dateVal}" required="${field.required}" />`;
+        formHtml += `<label>${escapeHtml(field.title)}</label>
+                     <input type="date" name="${escapeHtml(field.key)}" value="${escapeHtml(dateVal)}" ${field.required ? 'required' : ''} />`;
       }
       else if (field.type === 'checkbox') {
         const isChecked = (fieldValue === true || fieldValue === 'true') ? 'checked' : '';
         formHtml += `<label>
-                       <input type="checkbox" name="${field.key}" value="true" ${isChecked} />
-                       <span class="checkbox-label">${field.title}</span>
+                       <input type="checkbox" name="${escapeHtml(field.key)}" value="true" ${isChecked} />
+                       <span class="checkbox-label">${escapeHtml(field.title)}</span>
                      </label>`;
       }
       else if (field.type === 'dropdown') {
-        formHtml += `<label>${field.title}</label>
-                     <select name="${field.key}" required="${field.required}">
-                       <option value="">-- Select ${field.title} --</option>`;
+        formHtml += `<label>${escapeHtml(field.title)}</label>
+                     <select name="${escapeHtml(field.key)}" ${field.required ? 'required' : ''}>
+                       <option value="">-- Select ${escapeHtml(field.title)} --</option>`;
         if (field.custom_field_options) {
           field.custom_field_options.forEach(opt => {
             if (opt.active !== false || fieldValue === opt.value) {
               const selected = (fieldValue === opt.value) ? 'selected' : '';
-              formHtml += `<option value="${opt.value}" ${selected}>${opt.name}</option>`;
+              formHtml += `<option value="${escapeHtml(opt.value)}" ${selected}>${escapeHtml(opt.name)}</option>`;
             }
           });
         }
         formHtml += `</select>`;
       }
       else if (field.type === 'lookup') {
-        formHtml += `<label>${field.title}</label>`;
+        formHtml += `<label>${escapeHtml(field.title)}</label>`;
         const selectId = `lookup-${field.key}`;
-        
+
         let initialLabel = `Record ${fieldValue}`;
         if (fieldValue) {
            initialLabel = await fetchSingleRecordName(field.relationship_target_type, fieldValue);
@@ -447,17 +457,17 @@ async function showForm(existingRecord = null) {
            targetType: field.relationship_target_type
         });
 
-        formHtml += `<select id="${selectId}" name="${field.key}" required="${field.required}" placeholder="Type to search ${field.title}...">`;
+        formHtml += `<select id="${selectId}" name="${escapeHtml(field.key)}" ${field.required ? 'required' : ''} placeholder="Type to search ${escapeHtml(field.title)}...">`;
         if (fieldValue) {
-            formHtml += `<option value="${fieldValue}" selected>${initialLabel}</option>`;
+            formHtml += `<option value="${escapeHtml(fieldValue)}" selected>${escapeHtml(initialLabel)}</option>`;
         } else {
             formHtml += `<option value="">-- Type to search --</option>`;
         }
         formHtml += `</select>`;
-      } 
+      }
       else {
-        formHtml += `<label>${field.title}</label>
-                     <input type="text" name="${field.key}" value="${fieldValue}" placeholder="Type: ${field.type}" />`;
+        formHtml += `<label>${escapeHtml(field.title)}</label>
+                     <input type="text" name="${escapeHtml(field.key)}" value="${escapeHtml(fieldValue)}" placeholder="Type: ${escapeHtml(field.type)}" />`;
       }
       formHtml += `</div>`;
     }
@@ -608,7 +618,7 @@ async function loadRelatedRecords(recordId) {
       if (records.length > 0) {
         foundAny = true;
         html += `<div class="related-section">
-                   <h4>${field.label} <span>(via field: ${field.title})</span></h4>
+                   <h4>${escapeHtml(field.label)} <span>(via field: ${escapeHtml(field.title)})</span></h4>
                    <ul class="related-list">`;
         
         records.forEach(r => {
@@ -616,8 +626,8 @@ async function loadRelatedRecords(recordId) {
           if (nameText.trim() === '') nameText = `[No Name] Record #${r.id}`;
           
           html += `<li>
-                     <span>${nameText}</span>
-                     <span class="badge-id">ID: ${r.id}</span>
+                     <span>${escapeHtml(nameText)}</span>
+                     <span class="badge-id">ID: ${escapeHtml(r.id)}</span>
                    </li>`;
         });
 
