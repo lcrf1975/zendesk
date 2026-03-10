@@ -9,6 +9,9 @@ let tabulatorTable = null;
 let columnSelectorTS = null; 
 let objectSelectorTS = null; 
 let cachedLookupFields = null; // Caches the relation schema so we don't spam the API
+let activeFilters = [];        // Active advanced filter conditions
+let filterColumns = [];        // Columns available for filtering (set per table load)
+let lastFilterCoKey = null;    // Tracks which CO the filter bar was built for
 
 // DOM Elements
 const views = {
@@ -27,15 +30,29 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-new-record').addEventListener('click', () => showForm());
   document.getElementById('btn-back-selector').addEventListener('click', startApp);
   
-  // Tabulator Global Search
-  document.getElementById('table-search').addEventListener('input', function(e) {
-    if(tabulatorTable) {
-      const searchTerm = e.target.value.trim();
-      if (searchTerm === "") {
-        tabulatorTable.clearFilter(); 
-      } else {
-        tabulatorTable.setFilter(customFilter, searchTerm);
+  // Tabulator Global Search (now delegates to unified filter)
+  document.getElementById('table-search').addEventListener('input', function() {
+    applyTableFilters();
+  });
+
+  // Export CSV
+  document.getElementById('btn-export-csv').addEventListener('click', showExportModal);
+
+  // Advanced Filter toggle
+  document.getElementById('btn-advanced-filter').addEventListener('click', () => {
+    const filterBar = document.getElementById('filter-bar');
+    const btn = document.getElementById('btn-advanced-filter');
+    const isVisible = filterBar.style.display !== 'none';
+    if (!isVisible) {
+      filterBar.style.display = 'block';
+      btn.classList.add('active');
+      // Auto-add a first empty row if the bar is being opened fresh
+      if (document.getElementById('filter-rows').children.length === 0) {
+        addFilterRow();
       }
+    } else {
+      filterBar.style.display = 'none';
+      btn.classList.remove('active');
     }
   });
 
@@ -193,7 +210,10 @@ async function loadTable(coKey) {
         hozAlign: "center", 
         resizable: false,
         formatter: function(cell) {
-          return cell.getRow().getPosition(true);
+          const allRows = cell.getTable().getData("active");
+          const rowId = cell.getData().id;
+          const index = allRows.findIndex(r => r.id === rowId);
+          return index >= 0 ? index + 1 : '';
         }
       },
       { title: "ID", field: "id", width: 80 },
@@ -311,10 +331,10 @@ async function loadTable(coKey) {
       hidePlaceholder: true,
       onChange: function(values) {
         if(!tabulatorTable) return;
-        
+
         const valArray = Array.isArray(values) ? values : (values ? values.split(',') : []);
         const allHidableFields = columns.map(c => c.field).filter(f => f !== 'actions' && f !== 'custom_rownum');
-        
+
         allHidableFields.forEach(field => {
           if (valArray.includes(field)) {
             tabulatorTable.showColumn(field);
@@ -325,6 +345,8 @@ async function loadTable(coKey) {
       }
     });
 
+    renderFilterBar(columns, coKey);
+
   } catch (error) {
     console.error("Error loading table data:", error);
     updateLoaderText("Error loading table data.");
@@ -332,7 +354,86 @@ async function loadTable(coKey) {
 }
 
 async function deleteRecord(recordId) {
-  if (confirm(`Are you sure you want to delete record ${recordId}? This cannot be undone.`)) {
+  const overlay = document.getElementById('delete-modal-overlay');
+  const titleEl = document.getElementById('delete-modal-title');
+  const bodyEl = document.getElementById('delete-modal-body');
+  const confirmBtn = document.getElementById('delete-modal-confirm');
+  const cancelBtn = document.getElementById('delete-modal-cancel');
+
+  const close = () => { overlay.style.display = 'none'; };
+
+  // Show modal in loading state immediately
+  titleEl.innerText = 'Checking for related records...';
+  bodyEl.innerHTML = `<div style="text-align: center; padding: 20px;">
+                        <p style="color: #68737d; margin-bottom: 12px;">Scanning for linked data...</p>
+                        <div class="progress-container"><div class="progress-bar-indeterminate"></div></div>
+                      </div>`;
+  confirmBtn.disabled = true;
+  cancelBtn.onclick = close;
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+  overlay.style.display = 'flex';
+
+  // Scan for related records using the existing relationship engine
+  let totalRelated = 0;
+  let relatedHtml = '';
+  try {
+    const fields = await getLookupFieldsForCurrentCo();
+    for (const field of fields) {
+      const endpoint = `/api/v2/zen:custom_object:${currentCoKey}/${recordId}/relationship_fields/${field.id}/${field.type}`;
+      try {
+        const response = await client.request(endpoint);
+        let dataKey = '';
+        let displayField = 'name';
+        if (field.type === 'zen:ticket') { dataKey = 'tickets'; displayField = 'subject'; }
+        else if (field.type === 'zen:user') { dataKey = 'users'; displayField = 'name'; }
+        else if (field.type === 'zen:organization') { dataKey = 'organizations'; displayField = 'name'; }
+        else if (field.type.startsWith('zen:custom_object:')) { dataKey = 'custom_object_records'; displayField = 'name'; }
+
+        const records = response[dataKey] || [];
+        if (records.length > 0) {
+          totalRelated += records.length;
+          relatedHtml += `<div class="related-section">
+                            <h4>${escapeHtml(field.label)} <span>(via field: ${escapeHtml(field.title)})</span></h4>
+                            <ul class="related-list">`;
+          records.forEach(r => {
+            let nameText = r[displayField] || r.title || `Record #${r.id}`;
+            if (nameText.trim() === '') nameText = `[No Name] Record #${r.id}`;
+            relatedHtml += `<li>
+                               <span>${escapeHtml(nameText)}</span>
+                               <span class="badge-id">ID: ${escapeHtml(r.id)}</span>
+                             </li>`;
+          });
+          if (response.meta && response.meta.has_more) {
+            relatedHtml += `<li><span style="color:#1f73b7; font-size:12px;">+ More records exist (not all shown)</span></li>`;
+          }
+          relatedHtml += `</ul></div>`;
+        }
+      } catch (err) {
+        console.warn(`Could not check relationships for field ${field.id}`, err);
+      }
+    }
+  } catch (err) {
+    console.warn('Could not scan for related records', err);
+  }
+
+  // Populate modal based on findings
+  if (totalRelated > 0) {
+    titleEl.innerText = `Warning: ${totalRelated} linked item${totalRelated !== 1 ? 's' : ''} will be affected`;
+    bodyEl.innerHTML = `
+      <div class="delete-warning">
+        <p>Deleting this record will remove its reference from <strong>${totalRelated} linked item${totalRelated !== 1 ? 's' : ''}</strong> in Zendesk. Those items will not be deleted, but they will lose their link to this record.</p>
+      </div>
+      ${relatedHtml}
+      <p style="margin-top: 16px; font-weight: 600; color: #2f3941;">Are you sure you want to permanently delete this record?</p>
+    `;
+  } else {
+    titleEl.innerText = 'Confirm Deletion';
+    bodyEl.innerHTML = `<p>Are you sure you want to delete record <strong>${escapeHtml(String(recordId))}</strong>? This cannot be undone.</p>`;
+  }
+
+  confirmBtn.disabled = false;
+  confirmBtn.onclick = async () => {
+    close();
     updateLoaderText(`Deleting record ${recordId}...`);
     switchView('loader');
     try {
@@ -340,13 +441,13 @@ async function deleteRecord(recordId) {
         url: `/api/v2/custom_objects/${currentCoKey}/records/${recordId}`,
         type: 'DELETE'
       });
-      await loadTable(currentCoKey); 
+      await loadTable(currentCoKey);
     } catch (error) {
-      console.error("Error deleting record:", error);
-      alert("Failed to delete record.");
+      console.error('Error deleting record:', error);
+      alert('Failed to delete record.');
       switchView('table');
     }
-  }
+  };
 }
 
 // ----------------------------------------------------
@@ -703,6 +804,230 @@ async function handleFormSubmit(event) {
     submitBtn.disabled = false;
     console.error("Save Error:", error);
   }
+}
+
+// ----------------------------------------------------
+// ADVANCED FILTER
+// ----------------------------------------------------
+
+// Operators that don't require a value input
+const NO_VALUE_OPS = new Set(['empty', 'notempty', 'true', 'false']);
+
+// Evaluates a single filter condition against a cell value
+function evaluateFilter(cellValue, operator, pattern) {
+  const strVal = String(cellValue ?? '').trim();
+  const isEmpty = cellValue === null || cellValue === undefined || strVal === '';
+
+  switch (operator) {
+    case 'empty':    return isEmpty;
+    case 'notempty': return !isEmpty;
+    case 'true':     return cellValue === true || strVal.toLowerCase() === 'true' || strVal === '1';
+    case 'false':    return cellValue === false || strVal.toLowerCase() === 'false' || strVal === '0' || isEmpty;
+    case 'gt':
+    case 'lt':
+    case 'gte':
+    case 'lte': {
+      const numA = parseFloat(cellValue);
+      const numB = parseFloat(pattern);
+      // Prefer numeric comparison; fall back to lexicographic (handles ISO dates)
+      const a = !isNaN(numA) && !isNaN(numB) ? numA : strVal;
+      const b = !isNaN(numA) && !isNaN(numB) ? numB : String(pattern);
+      if (operator === 'gt')  return a > b;
+      if (operator === 'lt')  return a < b;
+      if (operator === 'gte') return a >= b;
+      if (operator === 'lte') return a <= b;
+      return false;
+    }
+    case 'eq':
+    case 'neq':
+    default: {
+      // Wildcard matching: *suffix, prefix*, *contains*, or exact
+      if (!pattern) return true;
+      const val = strVal.toLowerCase();
+      const pat = String(pattern).toLowerCase();
+      const startsWild = pat.startsWith('*');
+      const endsWild   = pat.endsWith('*');
+      const core = pat.replace(/^\*|\*$/g, '');
+      let match;
+      if (startsWild && endsWild) { match = val.includes(core); }
+      else if (startsWild)        { match = val.endsWith(core); }
+      else if (endsWild)          { match = val.startsWith(core); }
+      else                        { match = val === pat; }
+      return operator === 'neq' ? !match : match;
+    }
+  }
+}
+
+// Unified filter: combines global search (always AND) + advanced conditions (AND or OR)
+function applyTableFilters() {
+  if (!tabulatorTable) return;
+  const searchTerm = (document.getElementById('table-search')?.value || '').trim();
+  const logic = document.querySelector('input[name="filter-logic"]:checked')?.value || 'and';
+
+  if (!searchTerm && activeFilters.length === 0) {
+    tabulatorTable.clearFilter();
+    return;
+  }
+  tabulatorTable.setFilter(function(data) {
+    // Global search always narrows results (AND with advanced filters)
+    if (searchTerm && !customFilter(data, searchTerm)) return false;
+    if (activeFilters.length === 0) return true;
+    if (logic === 'or') {
+      return activeFilters.some(f => evaluateFilter(data[f.field], f.operator, f.value));
+    }
+    return activeFilters.every(f => evaluateFilter(data[f.field], f.operator, f.value));
+  });
+}
+
+// Initialises the filter bar for a freshly loaded table
+function renderFilterBar(columns, coKey) {
+  filterColumns = columns.filter(c => c.field !== 'actions' && c.field !== 'custom_rownum');
+
+  if (coKey !== lastFilterCoKey) {
+    // Different CO: clear filter state and DOM rows
+    activeFilters = [];
+    document.getElementById('filter-rows').innerHTML = '';
+    lastFilterCoKey = coKey;
+    updateFilterBadge();
+  } else {
+    // Same CO reloaded (after save/delete): re-apply existing filters to the new table instance
+    applyTableFilters();
+  }
+
+  document.getElementById('btn-add-filter-row').onclick = () => addFilterRow();
+
+  document.getElementById('btn-apply-filters').onclick = () => {
+    collectFiltersFromDOM();
+    applyTableFilters();
+    updateFilterBadge();
+  };
+
+  document.getElementById('btn-clear-filters').onclick = () => {
+    activeFilters = [];
+    document.getElementById('filter-rows').innerHTML = '';
+    applyTableFilters();
+    updateFilterBadge();
+  };
+}
+
+function addFilterRow() {
+  const colOptions = filterColumns.map(c =>
+    `<option value="${escapeHtml(c.field)}">${escapeHtml(c.title)}</option>`
+  ).join('');
+
+  const rowEl = document.createElement('div');
+  rowEl.className = 'filter-row';
+  rowEl.innerHTML = `
+    <select class="filter-field">${colOptions}</select>
+    <select class="filter-operator">
+      <option value="eq">= equals</option>
+      <option value="neq">≠ not equals</option>
+      <option value="empty">is empty / null</option>
+      <option value="notempty">is not empty</option>
+      <option value="true">is true / yes</option>
+      <option value="false">is false / no / null</option>
+      <option value="gt">&gt; greater than</option>
+      <option value="lt">&lt; less than</option>
+      <option value="gte">≥ greater or equal</option>
+      <option value="lte">≤ less or equal</option>
+    </select>
+    <input type="text" class="filter-value" placeholder="value, prefix*, *suffix, *contains*" />
+    <button type="button" class="filter-row-remove" title="Remove condition">×</button>
+  `;
+
+  const operatorEl = rowEl.querySelector('.filter-operator');
+  const valueEl    = rowEl.querySelector('.filter-value');
+  operatorEl.addEventListener('change', () => {
+    valueEl.style.visibility = NO_VALUE_OPS.has(operatorEl.value) ? 'hidden' : 'visible';
+  });
+
+  rowEl.querySelector('.filter-row-remove').onclick = () => {
+    rowEl.remove();
+    collectFiltersFromDOM();
+    applyTableFilters();
+    updateFilterBadge();
+  };
+  document.getElementById('filter-rows').appendChild(rowEl);
+}
+
+function collectFiltersFromDOM() {
+  activeFilters = [];
+  document.querySelectorAll('.filter-row').forEach(row => {
+    const field    = row.querySelector('.filter-field').value;
+    const operator = row.querySelector('.filter-operator').value;
+    const value    = row.querySelector('.filter-value').value.trim();
+    // No-value operators are valid without a value; others require one
+    if (field && (NO_VALUE_OPS.has(operator) || value)) {
+      activeFilters.push({ field, operator, value });
+    }
+  });
+}
+
+function updateFilterBadge() {
+  const btn = document.getElementById('btn-advanced-filter');
+  if (!btn) return;
+  const existing = btn.querySelector('.filter-active-badge');
+  if (existing) existing.remove();
+  if (activeFilters.length > 0) {
+    const badge = document.createElement('span');
+    badge.className = 'filter-active-badge';
+    badge.innerText = activeFilters.length;
+    btn.appendChild(badge);
+  }
+}
+
+// ----------------------------------------------------
+// CSV EXPORT
+// ----------------------------------------------------
+
+function showExportModal() {
+  if (!tabulatorTable) return;
+
+  const overlay    = document.getElementById('export-modal-overlay');
+  const infoEl     = document.getElementById('export-modal-info');
+  const activeRows = tabulatorTable.getData('active').length;
+  const totalRows  = tabulatorTable.getData().length;
+  const note       = activeRows < totalRows ? ` (filtered from ${totalRows} total)` : '';
+
+  infoEl.innerHTML = `<strong>${activeRows} row${activeRows !== 1 ? 's' : ''}</strong> will be exported${note}.`;
+
+  const close = () => { overlay.style.display = 'none'; };
+  document.getElementById('export-modal-cancel').onclick = close;
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+
+  document.getElementById('export-btn-visible').onclick = () => { close(); buildAndDownloadCSV(false); };
+  document.getElementById('export-btn-all').onclick     = () => { close(); buildAndDownloadCSV(true);  };
+
+  overlay.style.display = 'flex';
+}
+
+function buildAndDownloadCSV(allColumns) {
+  const data = tabulatorTable.getData('active');
+
+  const cols = tabulatorTable.getColumns().filter(col => {
+    const field = col.getField();
+    if (!field || field === 'actions' || field === 'custom_rownum') return false;
+    return allColumns || col.isVisible();
+  });
+
+  const headers = cols.map(col => csvEscape(col.getDefinition().title));
+  const rows    = data.map(row =>
+    cols.map(col => csvEscape(String(row[col.getField()] ?? '')))
+  );
+
+  // Prepend UTF-8 BOM so Excel opens the file with correct encoding
+  const csv  = '\ufeff' + [headers.join(','), ...rows.map(r => r.join(','))].join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `${currentCoKey}_export.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function csvEscape(val) {
+  return `"${String(val).replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`;
 }
 
 // ----------------------------------------------------

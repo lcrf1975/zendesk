@@ -29,6 +29,8 @@
         </div>
         <div class="toolbar-actions">
           <button id="btn-new-record" class="btn">Add New Record</button>
+          <button id="btn-advanced-filter" class="btn btn-secondary">Advanced Filter</button>
+          <button id="btn-export-csv" class="btn btn-secondary">Export CSV</button>
           <button id="btn-back-selector" class="btn btn-secondary">Change Object</button>
         </div>
       </div>
@@ -43,12 +45,58 @@
         </div>
       </div>
 
+      <div id="filter-bar" style="display: none;">
+        <div class="filter-bar-header">
+          Advanced Filters
+          <span class="filter-logic-toggle">
+            Match:
+            <label><input type="radio" name="filter-logic" value="and" checked> ALL conditions (AND)</label>
+            <label><input type="radio" name="filter-logic" value="or"> ANY condition (OR)</label>
+          </span>
+        </div>
+        <div class="filter-bar-hint">* wildcard: <code>abc*</code> starts with &nbsp;·&nbsp; <code>*xyz</code> ends with &nbsp;·&nbsp; <code>*text*</code> contains &nbsp;·&nbsp; Numeric/date operators use exact values</div>
+        <div id="filter-rows"></div>
+        <div class="filter-bar-footer">
+          <button id="btn-add-filter-row" class="btn btn-secondary">+ Add Condition</button>
+          <div style="display: flex; gap: 8px;">
+            <button id="btn-apply-filters" class="btn">Apply Filter</button>
+            <button id="btn-clear-filters" class="btn btn-secondary">Clear All</button>
+          </div>
+        </div>
+      </div>
+
       <div id="records-table"></div>
     </div>
 
     <div id="form-view" style="display: none;"></div>
   </div>
   
+  <!-- Export CSV Modal -->
+  <div id="export-modal-overlay" style="display: none;">
+    <div id="export-modal">
+      <h3>Export to CSV</h3>
+      <p id="export-modal-info"></p>
+      <p style="font-size: 13px; color: #2f3941; margin: 0;">Which columns should be included?</p>
+      <div id="export-modal-actions">
+        <button id="export-modal-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="export-btn-visible" class="btn btn-secondary">Visible Columns Only</button>
+        <button id="export-btn-all" class="btn">All Fields</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete Confirmation Modal -->
+  <div id="delete-modal-overlay" style="display: none;">
+    <div id="delete-modal">
+      <h3 id="delete-modal-title"></h3>
+      <div id="delete-modal-body"></div>
+      <div id="delete-modal-actions">
+        <button id="delete-modal-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="delete-modal-confirm" class="btn" disabled>Delete</button>
+      </div>
+    </div>
+  </div>
+
   <script src="https://static.zdassets.com/zendesk_app_framework_sdk/2.0/zaf_sdk.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/js/tom-select.complete.min.js"></script>
   <script type="text/javascript" src="https://unpkg.com/tabulator-tables@5.5.0/dist/js/tabulator.min.js"></script>

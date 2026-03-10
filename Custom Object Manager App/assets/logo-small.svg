@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+  <!-- Blue rounded-square background -->
+  <rect width="40" height="40" rx="8" fill="#1f73b7"/>
+  <!-- Table icon (24×24 native size) centered with 8 px padding on each side -->
+  <g transform="translate(8, 8)" fill="white">
+    <!-- Header row: solid with rounded top corners -->
+    <path d="M3 2h18a2 2 0 0 1 2 2v5H1V4a2 2 0 0 1 2-2z"/>
+    <!-- Table body: rounded bottom corners; cells punched via evenodd to reveal grid lines -->
+    <path fill-rule="evenodd" clip-rule="evenodd" d="M1 9h22v11a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V9zm1.5 1.5h6.5v3.5H2.5v-3.5zm8.5 0h10.5v3.5H11v-3.5zm-8.5 5.5h6.5v4H2.5v-4zm8.5 0h10.5v4H11v-4z"/>
+  </g>
+</svg>
