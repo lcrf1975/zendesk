@@ -979,20 +979,10 @@ class MigrationLogic:
 
     def prepare_payload(self, field: Dict, object_key: str) -> Dict:
         """Prepare API payload from field data."""
-        try:
-            position = int(field.get('position', 0))
-        except (ValueError, TypeError):
-            position = 0
-            self._log_warning(
-                f"Invalid position for field '{field.get('title')}', "
-                f"using default: 0"
-            )
-
         field_data = {
             'type': field.get('type'),
             'title': field.get('title'),
             'description': field.get('description', ''),
-            'position': position,
             'active': field.get('active', True),
         }
 
@@ -1190,7 +1180,7 @@ class LogFileManager:
 class ZendeskMigratorApp:
     """Main application class for Zendesk Migration Tool."""
 
-    VERSION = "1.1.0"
+    VERSION = "1.2.0"
 
     # High contrast color coding for log levels
     LOG_COLORS = {
@@ -2336,6 +2326,61 @@ class ZendeskMigratorApp:
 
         return results
 
+    @staticmethod
+    def _humanize_conditions(
+        conditions: List[Dict],
+        field_id_to_title: Dict[int, str]
+    ) -> List[Dict]:
+        """Replace numeric field IDs with titles in a conditions list.
+
+        Conditions whose parent or all child fields cannot be resolved to a
+        title are silently dropped — they would be unremappable on import.
+        """
+        result = []
+        for cond in conditions:
+            parent_title = field_id_to_title.get(cond.get('parent_field_id'))
+            if not parent_title:
+                continue
+
+            child_fields = []
+            for cf in cond.get('child_fields', []):
+                child_title = field_id_to_title.get(cf.get('id'))
+                if child_title:
+                    child_fields.append({
+                        'title': child_title,
+                        'is_required': cf.get('is_required', False)
+                    })
+
+            if child_fields:
+                result.append({
+                    'parent_field_title': parent_title,
+                    'value': cond.get('value', ''),
+                    'child_fields': child_fields
+                })
+        return result
+
+    def _serialize_form_conditions(
+        self,
+        form: Dict,
+        field_id_to_title: Dict[int, str]
+    ) -> str:
+        """Serialise a form's agent/end_user conditions as a JSON string.
+
+        Returns an empty string when the form has no conditions so that the
+        CSV cell is blank and backward-compatible with old import flows.
+        """
+        agent = self._humanize_conditions(
+            form.get('agent_conditions', []), field_id_to_title
+        )
+        end_user = self._humanize_conditions(
+            form.get('end_user_conditions', []), field_id_to_title
+        )
+        if not agent and not end_user:
+            return ''
+        return json.dumps(
+            {'agent': agent, 'end_user': end_user}, ensure_ascii=False
+        )
+
     def export_csv(self) -> None:
         """Export analysis results to CSV file."""
         with self._analysis_lock:
@@ -2398,6 +2443,15 @@ class ZendeskMigratorApp:
             [x['source'] for x in results.existing_forms]
         )
 
+        # Build field ID → title map from ALL source ticket fields (custom +
+        # system) so that conditions referencing system fields can be exported.
+        field_id_to_title: Dict[int, str] = {}
+        for f in self.source_data.get('ticket_fields', []):
+            fid = f.get('id')
+            title = f.get('title', '')
+            if fid and title:
+                field_id_to_title[fid] = title
+
         field_to_forms: Dict[int, List[str]] = {}
         for form in all_forms:
             for field_id in form.get('ticket_field_ids', []):
@@ -2408,16 +2462,19 @@ class ZendeskMigratorApp:
         with open(filepath, mode='w', newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
 
-            # Updated header with Relationship Target Type column
             writer.writerow([
                 'Type', 'Object', 'Name', 'Title (Customer)', 'Tag',
                 'Description (Customer)', 'Agent Description',
                 'Agent Required (Solved)', 'End-User Required',
                 'End-User Visible', 'End-User Editable', 'RegEx',
-                'Default', 'Active', 'Relationship Target Type'
+                'Default', 'Active', 'Relationship Target Type',
+                'Conditions (JSON)'
             ])
 
             for form in all_forms:
+                conditions_json = self._serialize_form_conditions(
+                    form, field_id_to_title
+                )
                 writer.writerow([
                     'ticket_form',
                     'root',
@@ -2433,7 +2490,8 @@ class ZendeskMigratorApp:
                     '',
                     '',
                     form.get('active', True),
-                    ''
+                    '',
+                    conditions_json
                 ])
 
             for field in all_fields:
@@ -2474,7 +2532,8 @@ class ZendeskMigratorApp:
                     field.get('regexp_for_validation', ''),
                     '',
                     field.get('active', True),
-                    field.get('relationship_target_type', '')
+                    field.get('relationship_target_type', ''),
+                    ''
                 ])
 
                 for option in field.get('custom_field_options', []):
@@ -2492,6 +2551,7 @@ class ZendeskMigratorApp:
                         '',
                         '',
                         option.get('default', False),
+                        '',
                         '',
                         ''
                     ])
@@ -2595,6 +2655,18 @@ class ZendeskMigratorApp:
 
             name_to_id_map: Dict[str, int] = {}
 
+            # Pre-populate with target system field titles so that conditions
+            # referencing system fields (status, priority, etc.) can be remapped.
+            # Custom fields added during migration below will overwrite these
+            # entries only if a custom field happens to share the same title,
+            # which is an edge case and acceptable behaviour.
+            for _sf in target_data.get('ticket_field', []):
+                if self.logic.is_system_field(_sf):
+                    _title = _sf.get('title', '')
+                    _fid = _sf.get('id')
+                    if _title and _fid:
+                        name_to_id_map[_title] = _fid
+
             # Track skipped lookup fields for summary
             skipped_lookups: List[Dict[str, str]] = []
 
@@ -2688,7 +2760,7 @@ class ZendeskMigratorApp:
 
                 result = self._process_form_import(
                     client, form, fields, name_to_id_map,
-                    target_maps, strategy
+                    target_maps, target_data, strategy
                 )
 
                 report = reports['ticket_form']
@@ -2785,7 +2857,8 @@ class ZendeskMigratorApp:
                         'active': row.get('Active', 'true').lower() == 'true',
                         'end_user_visible': (
                             row.get('End-User Visible', 'false').lower() == 'true'
-                        )
+                        ),
+                        'conditions_json': row.get('Conditions (JSON)', '')
                     })
                     current_field = None
 
@@ -2933,9 +3006,20 @@ class ZendeskMigratorApp:
                 return {'status': 'error'}
 
             elif strategy == ImportStrategy.UPDATE.value:
-                self._map_existing_options(
+                # key is immutable after creation on user/org fields.
+                # Sending a different key in PUT causes a 422. Drop it so
+                # Zendesk keeps whatever key the target field already has.
+                if field_type in ('user_field', 'organization_field'):
+                    payload[field_type].pop('key', None)
+
+                option_warnings = self._map_existing_options(
                     field_type, target_id, target_data, payload
                 )
+                for warning in option_warnings:
+                    self.log_with_level(
+                        f"[WARNING] '{field['title']}': {warning}",
+                        LogLevel.WARNING
+                    )
 
                 result = client.update_object_safe(
                     f"{field_type}s", target_id, payload, field_type
@@ -2964,30 +3048,46 @@ class ZendeskMigratorApp:
         target_id: int,
         target_data: Dict[str, List],
         payload: Dict
-    ) -> None:
-        """Map existing option IDs for update operations."""
+    ) -> List[str]:
+        """Map existing option IDs for update operations.
+
+        Matches options by value (tag) only. Name-only matches are skipped
+        and returned as warnings to avoid silently changing option tags, which
+        would break any triggers, automations, or views referencing the old tag.
+
+        Returns:
+            List of warning messages for options that could not be safely mapped.
+        """
+        warnings = []
         existing_obj = next(
             (x for x in target_data.get(field_type, []) if x['id'] == target_id),
             None
         )
 
         if not existing_obj or 'custom_field_options' not in existing_obj:
-            return
+            return warnings
 
         value_map = {
             o['value']: o['id']
             for o in existing_obj['custom_field_options']
         }
-        name_map = {
-            o['name']: o['id']
+        name_to_value = {
+            o['name']: o['value']
             for o in existing_obj['custom_field_options']
         }
 
         for opt in payload[field_type].get('custom_field_options', []):
             if opt['value'] in value_map:
                 opt['id'] = value_map[opt['value']]
-            elif opt['name'] in name_map:
-                opt['id'] = name_map[opt['name']]
+            elif opt['name'] in name_to_value:
+                existing_value = name_to_value[opt['name']]
+                warnings.append(
+                    f"Option '{opt['name']}': CSV tag '{opt['value']}' differs "
+                    f"from target tag '{existing_value}'. Tag NOT changed to "
+                    "avoid breaking existing references. Update manually if intended."
+                )
+
+        return warnings
 
     def _process_form_import(
         self,
@@ -2996,20 +3096,67 @@ class ZendeskMigratorApp:
         fields: List[Dict],
         name_to_id_map: Dict[str, int],
         target_maps: Dict[str, Dict],
+        target_data: Dict[str, List],
         strategy: str
     ) -> Dict[str, Any]:
         """Process single form import."""
         exists = form['name'].lower() in target_maps['ticket_form']
         target_id = target_maps['ticket_form'].get(form['name'].lower())
 
-        field_ids = []
+        # Collect custom field IDs for this form from the current migration session.
+        custom_field_ids = []
         for field in fields:
-            associated_forms = field.get('associated_forms', [])
-            if form['name'] in associated_forms:
+            if form['name'] in field.get('associated_forms', []):
                 if field['title'] in name_to_id_map:
-                    field_ids.append(name_to_id_map[field['title']])
+                    custom_field_ids.append(name_to_id_map[field['title']])
 
-        payload = {
+        # For UPDATE: preserve system fields already on the existing form so
+        # they are not silently dropped from ticket_field_ids.
+        if exists and strategy == ImportStrategy.UPDATE.value:
+            system_field_ids = {
+                f['id'] for f in target_data.get('ticket_field', [])
+                if self.logic.is_system_field(f)
+            }
+            existing_form = next(
+                (f for f in target_data.get('ticket_form', [])
+                 if f['id'] == target_id),
+                None
+            )
+            preserved = []
+            if existing_form:
+                preserved = [
+                    fid for fid in existing_form.get('ticket_field_ids', [])
+                    if fid in system_field_ids
+                ]
+            field_ids = preserved + custom_field_ids
+        else:
+            field_ids = custom_field_ids
+
+        # Remap conditions from humanised titles back to target field IDs.
+        agent_conditions = []
+        end_user_conditions = []
+        conditions_json_str = form.get('conditions_json', '')
+        if conditions_json_str:
+            try:
+                conditions_data = json.loads(conditions_json_str)
+                agent_conditions = self._remap_conditions(
+                    conditions_data.get('agent', []),
+                    name_to_id_map,
+                    form['name']
+                )
+                end_user_conditions = self._remap_conditions(
+                    conditions_data.get('end_user', []),
+                    name_to_id_map,
+                    form['name']
+                )
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                self.log_with_level(
+                    f"[WARNING] Could not parse conditions for form "
+                    f"'{form['name']}': {e}",
+                    LogLevel.WARNING
+                )
+
+        payload: Dict[str, Any] = {
             'ticket_form': {
                 'name': form['name'],
                 'display_name': form['display_name'],
@@ -3018,6 +3165,10 @@ class ZendeskMigratorApp:
                 'ticket_field_ids': field_ids
             }
         }
+        if agent_conditions:
+            payload['ticket_form']['agent_conditions'] = agent_conditions
+        if end_user_conditions:
+            payload['ticket_form']['end_user_conditions'] = end_user_conditions
 
         if exists:
             if strategy == ImportStrategy.CLONE.value:
@@ -3054,6 +3205,59 @@ class ZendeskMigratorApp:
                 except (json.JSONDecodeError, KeyError):
                     return {'status': 'error'}
             return {'status': 'error'}
+
+    def _remap_conditions(
+        self,
+        conditions: List[Dict],
+        name_to_id_map: Dict[str, int],
+        form_name: str
+    ) -> List[Dict]:
+        """Remap humanised condition titles back to target field IDs.
+
+        Conditions exported to CSV have field IDs replaced with titles.
+        This reverses that substitution using name_to_id_map, which contains
+        both migrated custom fields and pre-populated system fields.
+
+        Conditions that reference fields not present in name_to_id_map are
+        skipped with a warning rather than failing the whole form import.
+        """
+        remapped = []
+        for cond in conditions:
+            parent_title = cond.get('parent_field_title', '')
+            parent_id = name_to_id_map.get(parent_title)
+            if not parent_id:
+                self.log_with_level(
+                    f"[WARNING] Form '{form_name}': condition parent field "
+                    f"'{parent_title}' not found in target — condition skipped.",
+                    LogLevel.WARNING
+                )
+                continue
+
+            child_fields = []
+            for cf in cond.get('child_fields', []):
+                child_title = cf.get('title', '')
+                child_id = name_to_id_map.get(child_title)
+                if child_id:
+                    child_fields.append({
+                        'id': child_id,
+                        'is_required': cf.get('is_required', False)
+                    })
+                else:
+                    self.log_with_level(
+                        f"[WARNING] Form '{form_name}': condition child field "
+                        f"'{child_title}' not found in target — skipped from "
+                        "condition.",
+                        LogLevel.WARNING
+                    )
+
+            if child_fields:
+                remapped.append({
+                    'parent_field_id': parent_id,
+                    'value': cond.get('value', ''),
+                    'child_fields': child_fields
+                })
+
+        return remapped
 
     def _log_import_report(
         self,
