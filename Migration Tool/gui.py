@@ -6,6 +6,7 @@ import json
 import csv
 import time
 import os
+import sys
 import copy
 import re
 from datetime import datetime
@@ -152,16 +153,20 @@ class AnalysisResults:
     """Stores results from analysis operation."""
     new_fields: List[Dict] = field(default_factory=list)
     existing_fields: List[Dict] = field(default_factory=list)
+    changed_fields: List[Dict] = field(default_factory=list)
     new_forms: List[Dict] = field(default_factory=list)
     existing_forms: List[Dict] = field(default_factory=list)
+    changed_forms: List[Dict] = field(default_factory=list)
 
     def has_data(self) -> bool:
         """Check if analysis has any results."""
         return bool(
             self.new_fields or
             self.existing_fields or
+            self.changed_fields or
             self.new_forms or
-            self.existing_forms
+            self.existing_forms or
+            self.changed_forms
         )
 
 
@@ -1150,6 +1155,7 @@ class LogFileManager:
                     if not self._open_file():
                         return False
 
+                assert self._file_handle is not None
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 level_name = level.name if level != LogLevel.ALWAYS else "NOTICE"
                 self._file_handle.write(
@@ -1393,14 +1399,17 @@ class ZendeskMigratorApp:
         self.tab_migrate = ttk.Frame(self.notebook)
         self.tab_import = ttk.Frame(self.notebook)
         self.tab_rollback = ttk.Frame(self.notebook)
+        self.tab_diff = ttk.Frame(self.notebook)
 
         self.notebook.add(self.tab_migrate, text=" Analysis & Export ")
         self.notebook.add(self.tab_import, text=" Import & Execute ")
         self.notebook.add(self.tab_rollback, text=" Rollback ")
+        self.notebook.add(self.tab_diff, text=" Diff Viewer ")
 
         self._setup_migrate_tab()
         self._setup_import_tab()
         self._setup_rollback_tab()
+        self._setup_diff_tab()
 
     def _setup_migrate_tab(self) -> None:
         """Setup the Analysis & Export tab."""
@@ -1493,6 +1502,95 @@ class ZendeskMigratorApp:
         ttk.Button(
             rb_ctrl_frame, text="DELETE (UNDO)", command=self.start_rollback
         ).pack(side='right', padx=5)
+
+    def _setup_diff_tab(self) -> None:
+        """Setup the Diff Viewer tab."""
+        # --- Filter toolbar ---
+        filter_frame = ttk.Frame(self.tab_diff, padding=(10, 8))
+        filter_frame.pack(fill='x')
+
+        ttk.Label(filter_frame, text="Status:").pack(side='left')
+        self.diff_status_var = tk.StringVar(value='All')
+        ttk.Combobox(
+            filter_frame,
+            textvariable=self.diff_status_var,
+            values=['All', 'New', 'Changed', 'Unchanged'],
+            state='readonly',
+            width=12,
+        ).pack(side='left', padx=(4, 14))
+        self.diff_status_var.trace_add('write', lambda *_: self._apply_diff_filter())
+
+        ttk.Label(filter_frame, text="Type:").pack(side='left')
+        self.diff_type_var = tk.StringVar(value='All')
+        ttk.Combobox(
+            filter_frame,
+            textvariable=self.diff_type_var,
+            values=['All', 'Ticket Fields', 'User Fields', 'Org Fields', 'Forms'],
+            state='readonly',
+            width=15,
+        ).pack(side='left', padx=(4, 14))
+        self.diff_type_var.trace_add('write', lambda *_: self._apply_diff_filter())
+
+        ttk.Button(
+            filter_frame,
+            text='Refresh',
+            command=self._populate_diff_viewer,
+        ).pack(side='left', padx=8)
+
+        ttk.Button(
+            filter_frame,
+            text='Export to CSV',
+            command=self.export_diff_csv,
+        ).pack(side='left', padx=(0, 8))
+
+        self.diff_summary_var = tk.StringVar(
+            value='Run Step 1: Analyze Differences to populate this view.'
+        )
+        ttk.Label(
+            filter_frame,
+            textvariable=self.diff_summary_var,
+            foreground='gray',
+        ).pack(side='right', padx=10)
+
+        # --- Treeview + scrollbars ---
+        tree_frame = ttk.Frame(self.tab_diff)
+        tree_frame.pack(fill='both', expand=True, padx=10, pady=(0, 8))
+
+        cols = ('obj_type', 'name', 'status', 'attribute', 'target_val', 'source_val')
+        self.diff_tree = ttk.Treeview(
+            tree_frame,
+            columns=cols,
+            show='headings',
+            height=12,
+            selectmode='browse',
+        )
+        self.diff_tree.heading('obj_type', text='Type')
+        self.diff_tree.heading('name', text='Name')
+        self.diff_tree.heading('status', text='Status')
+        self.diff_tree.heading('attribute', text='Attribute')
+        self.diff_tree.heading('target_val', text='Source')
+        self.diff_tree.heading('source_val', text='Target')
+
+        self.diff_tree.column('obj_type', width=120, minwidth=80, anchor='w')
+        self.diff_tree.column('name', width=200, minwidth=120, anchor='w')
+        self.diff_tree.column('status', width=90, minwidth=70, anchor='center')
+        self.diff_tree.column('attribute', width=160, minwidth=100, anchor='w')
+        self.diff_tree.column('target_val', width=220, minwidth=120, anchor='w')
+        self.diff_tree.column('source_val', width=220, minwidth=120, anchor='w')
+
+        self.diff_tree.tag_configure('new', background='#f8d7da', foreground='#721c24')
+        self.diff_tree.tag_configure('attr_diff', background='#fff3cd', foreground='#856404')
+        self.diff_tree.tag_configure('unchanged', background='#d4edda', foreground='#155724')
+
+        vsb = ttk.Scrollbar(tree_frame, orient='vertical', command=self.diff_tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient='horizontal', command=self.diff_tree.xview)
+        self.diff_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        self.diff_tree.grid(row=0, column=0, sticky='nsew')
+        vsb.grid(row=0, column=1, sticky='ns')
+        hsb.grid(row=1, column=0, sticky='ew')
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
 
     def _setup_log_frame(self) -> None:
         """Setup the log output frame."""
@@ -1600,12 +1698,6 @@ class ZendeskMigratorApp:
         progress_frame = ttk.Frame(self.root)
         progress_frame.pack(fill='x', padx=10, pady=(0, 5))
 
-        self.progress_var = tk.DoubleVar()
-        self.progress_bar = ttk.Progressbar(
-            progress_frame, variable=self.progress_var, maximum=100
-        )
-        self.progress_bar.pack(side='left', fill='x', expand=True, padx=(0, 10))
-
         self.stop_btn = ttk.Button(
             progress_frame,
             text="⏹ Stop",
@@ -1621,6 +1713,12 @@ class ZendeskMigratorApp:
             foreground="gray"
         )
         self.status_label.pack(side='right', padx=10)
+
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(
+            progress_frame, variable=self.progress_var, maximum=100
+        )
+        self.progress_bar.pack(side='left', fill='x', expand=True, padx=(0, 10))
 
     def _on_log_path_changed(self, *args) -> None:
         """Handle log file path changes."""
@@ -1687,7 +1785,11 @@ class ZendeskMigratorApp:
             while not self.log_queue.empty():
                 item = self.log_queue.get_nowait()
 
-                # Handle popup messages
+                # Handle special control messages
+                if isinstance(item, tuple) and item[0] == "REFRESH_DIFF":
+                    self.root.after(0, self._populate_diff_viewer)
+                    continue
+
                 if isinstance(item, tuple) and len(item) >= 3 and item[0] == "POPUP":
                     self.root.after(
                         0, lambda m=item: messagebox.showinfo(m[1], m[2])
@@ -1924,9 +2026,18 @@ class ZendeskMigratorApp:
         except (IOError, json.JSONDecodeError, KeyError):
             return True  # Default to True if can't read
 
+    @staticmethod
+    def _get_app_config_path() -> str:
+        """Return the default config.json path next to the app/executable."""
+        if getattr(sys, 'frozen', False):
+            app_dir = os.path.dirname(sys.executable)
+        else:
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(app_dir, 'config.json')
+
     def init_config_path(self) -> None:
         """Initialize config file path, optionally loading if auto-load is enabled."""
-        current_dir_path = os.path.abspath('config.json')
+        current_dir_path = self._get_app_config_path()
         user_home_path = os.path.join(os.path.expanduser("~"), 'config.json')
 
         config_path = None
@@ -2020,6 +2131,24 @@ class ZendeskMigratorApp:
                 f"[INFO] Config loaded from {path}",
                 LogLevel.INFO
             )
+
+            # If this file is not the default config.json, write the loaded
+            # settings back to config.json so the next startup picks them up.
+            app_config = self._get_app_config_path()
+            if os.path.normpath(path) != os.path.normpath(app_config):
+                try:
+                    with open(app_config, 'w', encoding='utf-8') as fw:
+                        json.dump(data, fw, indent=4)
+                    self.config_path_var.set(app_config)
+                    self.log_with_level(
+                        f"[INFO] Default config updated: {app_config}",
+                        LogLevel.INFO
+                    )
+                except IOError as write_err:
+                    self.log_with_level(
+                        f"[WARNING] Could not update default config: {write_err}",
+                        LogLevel.WARNING
+                    )
 
         except json.JSONDecodeError as e:
             self.log_with_level(
@@ -2216,24 +2345,69 @@ class ZendeskMigratorApp:
             self.log_with_level("-" * 60, LogLevel.ALWAYS)
             self.log_with_level("ANALYSIS RESULTS:", LogLevel.ALWAYS)
             self.log_with_level(
-                f"  New Fields: {len(self.analysis_results.new_fields)}",
+                f"  New Fields:       {len(self.analysis_results.new_fields)}",
                 LogLevel.ALWAYS
             )
             self.log_with_level(
-                f"  Existing Fields: {len(self.analysis_results.existing_fields)}",
+                f"  Unchanged Fields: {len(self.analysis_results.existing_fields)}",
                 LogLevel.ALWAYS
             )
             self.log_with_level(
-                f"  New Forms: {len(self.analysis_results.new_forms)}",
+                f"  Changed Fields:   {len(self.analysis_results.changed_fields)}",
                 LogLevel.ALWAYS
             )
             self.log_with_level(
-                f"  Existing Forms: {len(self.analysis_results.existing_forms)}",
+                f"  New Forms:        {len(self.analysis_results.new_forms)}",
+                LogLevel.ALWAYS
+            )
+            self.log_with_level(
+                f"  Unchanged Forms:  {len(self.analysis_results.existing_forms)}",
+                LogLevel.ALWAYS
+            )
+            self.log_with_level(
+                f"  Changed Forms:    {len(self.analysis_results.changed_forms)}",
                 LogLevel.ALWAYS
             )
             self.log_with_level("-" * 60, LogLevel.ALWAYS)
 
+            for entry in self.analysis_results.changed_fields:
+                field_title = entry['source'].get('title', '?')
+                field_type = entry['type']
+                self.log_with_level(
+                    f"[INFO] Field '{field_title}' ({field_type}) has differences:",
+                    LogLevel.INFO
+                )
+                for attr, diff in entry['diffs'].items():
+                    if attr == 'custom_field_options':
+                        opts = diff
+                        self.log_with_level(
+                            f"[INFO]   - options: "
+                            f"{len(opts['added'])} added, "
+                            f"{len(opts['removed'])} removed, "
+                            f"{len(opts['renamed'])} renamed",
+                            LogLevel.INFO
+                        )
+                    else:
+                        src_val, tgt_val = diff
+                        self.log_with_level(
+                            f"[INFO]   - {attr}: {tgt_val!r} → {src_val!r}",
+                            LogLevel.INFO
+                        )
+
+            for entry in self.analysis_results.changed_forms:
+                form_name = entry['source'].get('name', '?')
+                self.log_with_level(
+                    f"[INFO] Form '{form_name}' has differences:",
+                    LogLevel.INFO
+                )
+                for attr, (src_val, tgt_val) in entry['diffs'].items():
+                    self.log_with_level(
+                        f"[INFO]   - {attr}: {tgt_val!r} → {src_val!r}",
+                        LogLevel.INFO
+                    )
+
             if not self._is_stop_requested():
+                self.log_queue.put(("REFRESH_DIFF",))
                 self.log_queue.put(
                     ("POPUP", "Complete", "Analysis finished successfully.")
                 )
@@ -2264,10 +2438,10 @@ class ZendeskMigratorApp:
 
         for field_type in ['ticket_fields', 'user_fields', 'organization_fields']:
             field_map = {}
-            for field in self.target_data.get(field_type, []):
-                key = (field.get('title', '').lower(), field.get('type', ''))
+            for tgt_obj in self.target_data.get(field_type, []):
+                key = (tgt_obj.get('title', '').lower(), tgt_obj.get('type', ''))
                 if key not in field_map:
-                    field_map[key] = field['id']
+                    field_map[key] = tgt_obj['id']
             maps[field_type] = field_map
 
         maps['ticket_forms'] = {
@@ -2284,26 +2458,46 @@ class ZendeskMigratorApp:
         """Analyze differences between source and target."""
         results = AnalysisResults()
 
+        # Build id → full-object maps so we can do deep attribute comparison.
+        target_objects: Dict[str, Dict[int, Dict]] = {}
         for type_key in ['ticket_fields', 'user_fields', 'organization_fields']:
-            for field in self.source_data.get(type_key, []):
-                if self.logic.is_system_field(field):
+            target_objects[type_key] = {
+                obj['id']: obj
+                for obj in self.target_data.get(type_key, [])
+            }
+        target_objects['ticket_forms'] = {
+            obj['id']: obj
+            for obj in self.target_data.get('ticket_forms', [])
+        }
+
+        for type_key in ['ticket_fields', 'user_fields', 'organization_fields']:
+            for src_field in self.source_data.get(type_key, []):
+                if self.logic.is_system_field(src_field):
                     continue
 
                 lookup_key = (
-                    field.get('title', '').lower(),
-                    field.get('type', '')
+                    src_field.get('title', '').lower(),
+                    src_field.get('type', '')
                 )
 
                 if lookup_key in target_maps[type_key]:
-                    results.existing_fields.append({
-                        'source': field,
-                        'target_id': target_maps[type_key][lookup_key],
+                    target_id = target_maps[type_key][lookup_key]
+                    target_field = target_objects[type_key].get(target_id, {})
+                    diffs = self._diff_field(src_field, target_field, type_key)
+                    entry = {
+                        'source': src_field,
+                        'target_id': target_id,
                         'type': type_key[:-1],
-                        'list_key': type_key
-                    })
+                        'list_key': type_key,
+                        'diffs': diffs,
+                    }
+                    if diffs:
+                        results.changed_fields.append(entry)
+                    else:
+                        results.existing_fields.append(entry)
                 else:
                     results.new_fields.append({
-                        'source': field,
+                        'source': src_field,
                         'type': type_key[:-1],
                         'list_key': type_key
                     })
@@ -2315,16 +2509,120 @@ class ZendeskMigratorApp:
             form_name_lower = form.get('name', '').lower()
 
             if form_name_lower in target_maps['ticket_forms']:
-                results.existing_forms.append({
+                target_id = target_maps['ticket_forms'][form_name_lower]
+                target_form = target_objects['ticket_forms'].get(target_id, {})
+                diffs = self._diff_form(form, target_form)
+                entry = {
                     'source': form,
-                    'target_id': target_maps['ticket_forms'][form_name_lower]
-                })
+                    'target_id': target_id,
+                    'diffs': diffs,
+                }
+                if diffs:
+                    results.changed_forms.append(entry)
+                else:
+                    results.existing_forms.append(entry)
             else:
                 results.new_forms.append({
                     'source': form
                 })
 
         return results
+
+    @staticmethod
+    def _diff_field(
+        source: Dict,
+        target: Dict,
+        field_type: str
+    ) -> Dict[str, Any]:
+        """Compare source and target field dicts.
+
+        Returns a dict of {attr: (source_val, target_val)} for every attribute
+        that differs between the two objects.  Options (tagger/multiselect) are
+        reported as {added, removed, renamed} sets of tag values.
+        """
+        # String attributes where None and "" are semantically identical.
+        string_attrs = frozenset({
+            'description', 'agent_description', 'title_in_portal',
+            'regexp_for_validation', 'tag', 'key', 'relationship_target_type',
+        })
+
+        def _cmp(val: Any, attr: str) -> Any:
+            """Normalise None → '' for string attributes before comparing."""
+            return '' if (val is None and attr in string_attrs) else val
+
+        diffs: Dict[str, Any] = {}
+
+        for attr in ('description', 'active'):
+            src_val = source.get(attr)
+            tgt_val = target.get(attr)
+            if _cmp(src_val, attr) != _cmp(tgt_val, attr):
+                diffs[attr] = (src_val, tgt_val)
+
+        if field_type == 'ticket_fields':
+            for attr in (
+                'required', 'required_in_portal', 'visible_in_portal',
+                'editable_in_portal', 'title_in_portal', 'agent_description',
+                'regexp_for_validation', 'tag',
+            ):
+                src_val = source.get(attr)
+                tgt_val = target.get(attr)
+                if _cmp(src_val, attr) != _cmp(tgt_val, attr):
+                    diffs[attr] = (src_val, tgt_val)
+
+        elif field_type in ('user_fields', 'organization_fields'):
+            for attr in ('key', 'regexp_for_validation'):
+                src_val = source.get(attr)
+                tgt_val = target.get(attr)
+                if _cmp(src_val, attr) != _cmp(tgt_val, attr):
+                    diffs[attr] = (src_val, tgt_val)
+
+        if source.get('type') == 'lookup':
+            src_val = source.get('relationship_target_type')
+            tgt_val = target.get('relationship_target_type')
+            if _cmp(src_val, 'relationship_target_type') != _cmp(tgt_val, 'relationship_target_type'):
+                diffs['relationship_target_type'] = (src_val, tgt_val)
+
+        if source.get('type') in ('tagger', 'multiselect'):
+            src_opts = {
+                o['value']: o['name']
+                for o in source.get('custom_field_options', [])
+            }
+            tgt_opts = {
+                o['value']: o['name']
+                for o in target.get('custom_field_options', [])
+            }
+            added = [v for v in src_opts if v not in tgt_opts]
+            removed = [v for v in tgt_opts if v not in src_opts]
+            renamed = [
+                v for v in src_opts
+                if v in tgt_opts and src_opts[v] != tgt_opts[v]
+            ]
+            if added or removed or renamed:
+                diffs['custom_field_options'] = {
+                    'added': added,
+                    'removed': removed,
+                    'renamed': renamed,
+                }
+
+        return diffs
+
+    @staticmethod
+    def _diff_form(source: Dict, target: Dict) -> Dict[str, Any]:
+        """Compare source and target form dicts.
+
+        Returns a dict of {attr: (source_val, target_val)} for every attribute
+        that differs.
+        """
+        diffs: Dict[str, Any] = {}
+        for attr in ('display_name', 'end_user_visible', 'active'):
+            src_val = source.get(attr)
+            tgt_val = target.get(attr)
+            # Treat None and "" as equivalent for string attributes.
+            src_cmp = '' if (src_val is None and attr == 'display_name') else src_val
+            tgt_cmp = '' if (tgt_val is None and attr == 'display_name') else tgt_val
+            if src_cmp != tgt_cmp:
+                diffs[attr] = (src_val, tgt_val)
+        return diffs
 
     @staticmethod
     def _humanize_conditions(
@@ -2338,7 +2636,7 @@ class ZendeskMigratorApp:
         """
         result = []
         for cond in conditions:
-            parent_title = field_id_to_title.get(cond.get('parent_field_id'))
+            parent_title = field_id_to_title.get(cond.get('parent_field_id', 0))
             if not parent_title:
                 continue
 
@@ -2427,6 +2725,96 @@ class ZendeskMigratorApp:
                 LogLevel.DEBUG
             )
 
+    def export_diff_csv(self) -> None:
+        """Export only new and changed objects to a focused diff CSV."""
+        with self._analysis_lock:
+            if not self.analysis_results or not self.analysis_results.has_data():
+                messagebox.showwarning(
+                    "No Data",
+                    "Run Analysis first to generate diff data for export."
+                )
+                return
+            results = copy.deepcopy(self.analysis_results)
+
+        filepath = filedialog.asksaveasfilename(
+            title="Save Diff CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv")]
+        )
+        if not filepath:
+            return
+
+        try:
+            self._write_diff_csv(filepath, results)
+            self.log_with_level(
+                f"[INFO] Diff exported to {filepath}", LogLevel.INFO
+            )
+            messagebox.showinfo("Success", f"Diff exported to:\n{filepath}")
+        except IOError as e:
+            self.log_with_level(
+                f"[ERROR] Diff export failed: {e}", LogLevel.ERROR
+            )
+            messagebox.showerror("Error", f"Diff export failed: {e}")
+        except Exception as e:
+            self.log_with_level(
+                f"[ERROR] Diff export failed: {e}", LogLevel.ERROR
+            )
+            self.log_with_level(
+                f"[DEBUG] Stack Trace:\n{traceback.format_exc()}", LogLevel.DEBUG
+            )
+
+    def _write_diff_csv(self, filepath: str, results: AnalysisResults) -> None:
+        """Write a diff CSV containing new, changed, and unchanged objects."""
+        with open(filepath, mode='w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'Object Type', 'Name', 'Status',
+                'Attribute', 'Source Value', 'Target Value'
+            ])
+
+            for entry in results.new_fields:
+                writer.writerow([
+                    entry.get('type', ''), entry['source'].get('title', ''),
+                    'NEW', '', '', ''
+                ])
+
+            for entry in results.changed_fields:
+                obj_type = entry.get('type', '')
+                name = entry['source'].get('title', '')
+                for attr, diff_val in entry['diffs'].items():
+                    if attr == 'custom_field_options':
+                        tgt_str, src_str = self._format_options_diff_display(diff_val)
+                    else:
+                        tgt_str = str(diff_val[1]) if diff_val[1] is not None else ''
+                        src_str = str(diff_val[0]) if diff_val[0] is not None else ''
+                    writer.writerow([obj_type, name, 'CHANGED', attr, src_str, tgt_str])
+
+            for entry in results.existing_fields:
+                writer.writerow([
+                    entry.get('type', ''), entry['source'].get('title', ''),
+                    'UNCHANGED', '', '', ''
+                ])
+
+            for entry in results.new_forms:
+                writer.writerow([
+                    'ticket_form', entry['source'].get('name', ''),
+                    'NEW', '', '', ''
+                ])
+
+            for entry in results.changed_forms:
+                name = entry['source'].get('name', '')
+                for attr, (src_val, tgt_val) in entry['diffs'].items():
+                    writer.writerow([
+                        'ticket_form', name, 'CHANGED',
+                        attr, str(src_val), str(tgt_val)
+                    ])
+
+            for entry in results.existing_forms:
+                writer.writerow([
+                    'ticket_form', entry['source'].get('name', ''),
+                    'UNCHANGED', '', '', ''
+                ])
+
     def _write_export_csv(
         self,
         filepath: str,
@@ -2435,12 +2823,14 @@ class ZendeskMigratorApp:
         """Write analysis results to CSV file."""
         all_fields = (
             [x['source'] for x in results.new_fields] +
-            [x['source'] for x in results.existing_fields]
+            [x['source'] for x in results.existing_fields] +
+            [x['source'] for x in results.changed_fields]
         )
 
         all_forms = (
             [x['source'] for x in results.new_forms] +
-            [x['source'] for x in results.existing_forms]
+            [x['source'] for x in results.existing_forms] +
+            [x['source'] for x in results.changed_forms]
         )
 
         # Build field ID → title map from ALL source ticket fields (custom +
@@ -2494,25 +2884,25 @@ class ZendeskMigratorApp:
                     conditions_json
                 ])
 
-            for field in all_fields:
-                field_type = field.get('type', '')
+            for fld in all_fields:
+                field_type = fld.get('type', '')
 
                 if field_type not in ZendeskClient.ALLOWED_FIELD_TYPES:
                     continue
 
-                context = self._determine_field_context(field, field_to_forms)
+                context = self._determine_field_context(fld, field_to_forms)
 
-                description = (field.get('description') or '').replace('\n', ' ')
+                description = (fld.get('description') or '').replace('\n', ' ')
                 agent_desc = (
-                    field.get('agent_description') or ''
+                    fld.get('agent_description') or ''
                 ).replace('\n', ' ')
 
                 # Get lookup field info for logging
                 if field_type == 'lookup':
-                    lookup_info = self.logic.get_lookup_field_info(field)
+                    lookup_info = self.logic.get_lookup_field_info(fld)
                     if not lookup_info['is_migratable']:
                         self.log_with_level(
-                            f"[WARNING] Lookup field '{field.get('title')}' "
+                            f"[WARNING] Lookup field '{fld.get('title')}' "
                             f"may not migrate: {lookup_info['reason']}",
                             LogLevel.WARNING
                         )
@@ -2520,26 +2910,26 @@ class ZendeskMigratorApp:
                 writer.writerow([
                     field_type,
                     context,
-                    field.get('title', ''),
-                    field.get('title_in_portal', ''),
-                    field.get('tag', field.get('key', '')),
+                    fld.get('title', ''),
+                    fld.get('title_in_portal', ''),
+                    fld.get('tag', fld.get('key', '')),
                     description,
                     agent_desc,
-                    field.get('required', False),
-                    field.get('required_in_portal', False),
-                    field.get('visible_in_portal', False),
-                    field.get('editable_in_portal', False),
-                    field.get('regexp_for_validation', ''),
+                    fld.get('required', False),
+                    fld.get('required_in_portal', False),
+                    fld.get('visible_in_portal', False),
+                    fld.get('editable_in_portal', False),
+                    fld.get('regexp_for_validation', ''),
                     '',
-                    field.get('active', True),
-                    field.get('relationship_target_type', ''),
+                    fld.get('active', True),
+                    fld.get('relationship_target_type', ''),
                     ''
                 ])
 
-                for option in field.get('custom_field_options', []):
+                for option in fld.get('custom_field_options', []):
                     writer.writerow([
                         'option',
-                        field.get('title', ''),
+                        fld.get('title', ''),
                         option.get('name', ''),
                         '',
                         option.get('value', ''),
@@ -2556,6 +2946,195 @@ class ZendeskMigratorApp:
                         ''
                     ])
 
+    # -----------------------------------------------------------------------
+    # Diff Viewer
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _format_options_diff_display(diff_detail: Dict) -> Tuple[str, str]:
+        """Return (target_label, source_label) strings for an options diff."""
+        added = diff_detail.get('added', [])
+        removed = diff_detail.get('removed', [])
+        renamed = diff_detail.get('renamed', [])
+
+        def _sample(lst: list) -> str:
+            sample = ', '.join(lst[:2])
+            return f"{sample}{'…' if len(lst) > 2 else ''}"
+
+        tgt_parts = []
+        if removed:
+            tgt_parts.append(f"-{len(removed)} ({_sample(removed)})")
+        if renamed:
+            tgt_parts.append(f"~{len(renamed)} name change(s)")
+
+        src_parts = []
+        if added:
+            src_parts.append(f"+{len(added)} ({_sample(added)})")
+        if renamed:
+            src_parts.append(f"~{len(renamed)} renamed")
+
+        return (
+            ', '.join(tgt_parts) if tgt_parts else '',
+            ', '.join(src_parts) if src_parts else '',
+        )
+
+    def _populate_diff_viewer(self) -> None:
+        """Populate the diff treeview from current analysis results."""
+        with self._analysis_lock:
+            results = copy.deepcopy(self.analysis_results) if self.analysis_results else None
+
+        for item in self.diff_tree.get_children():
+            self.diff_tree.delete(item)
+
+        if not results or not results.has_data():
+            self.diff_summary_var.set(
+                'No analysis data — run Step 1: Analyze Differences first.'
+            )
+            return
+
+        status_filter = self.diff_status_var.get()
+        type_filter = self.diff_type_var.get()
+
+        type_label_map = {
+            'ticket_field': 'Ticket Field',
+            'user_field': 'User Field',
+            'organization_field': 'Org Field',
+        }
+        type_filter_map = {
+            'Ticket Fields': 'ticket_field',
+            'User Fields': 'user_field',
+            'Org Fields': 'organization_field',
+            'Forms': 'ticket_form',
+        }
+
+        def _want(obj_type: str, status: str) -> bool:
+            if status_filter != 'All' and status_filter != status:
+                return False
+            if type_filter != 'All':
+                if obj_type != type_filter_map.get(type_filter, ''):
+                    return False
+            return True
+
+        rows = 0
+
+        # New fields
+        for entry in results.new_fields:
+            obj_type = entry.get('type', '')
+            if not _want(obj_type, 'New'):
+                continue
+            self.diff_tree.insert(
+                '', 'end',
+                values=(
+                    type_label_map.get(obj_type, obj_type),
+                    entry['source'].get('title', '?'),
+                    'NEW', '', '', '',
+                ),
+                tags=('new',),
+            )
+            rows += 1
+
+        # Changed fields — one flat row per attribute diff
+        for entry in results.changed_fields:
+            obj_type = entry.get('type', '')
+            if not _want(obj_type, 'Changed'):
+                continue
+            name = entry['source'].get('title', '?')
+            type_label = type_label_map.get(obj_type, obj_type)
+            inserted = 0
+            for attr, diff_val in entry['diffs'].items():
+                if attr == 'custom_field_options':
+                    tgt_str, src_str = self._format_options_diff_display(diff_val)
+                else:
+                    tgt_str = str(diff_val[1]) if diff_val[1] not in (None, '') else ''
+                    src_str = str(diff_val[0]) if diff_val[0] not in (None, '') else ''
+                if src_str == tgt_str:
+                    continue
+                self.diff_tree.insert(
+                    '', 'end',
+                    values=(type_label, name, 'CHANGED', attr, src_str, tgt_str),
+                    tags=('attr_diff',),
+                )
+                inserted += 1
+            if inserted > 0:
+                rows += 1
+
+        # Unchanged fields
+        for entry in results.existing_fields:
+            obj_type = entry.get('type', '')
+            if not _want(obj_type, 'Unchanged'):
+                continue
+            self.diff_tree.insert(
+                '', 'end',
+                values=(
+                    type_label_map.get(obj_type, obj_type),
+                    entry['source'].get('title', '?'),
+                    'UNCHANGED', '', '', '',
+                ),
+                tags=('unchanged',),
+            )
+            rows += 1
+
+        # New forms
+        for entry in results.new_forms:
+            if not _want('ticket_form', 'New'):
+                continue
+            self.diff_tree.insert(
+                '', 'end',
+                values=('Form', entry['source'].get('name', '?'), 'NEW', '', '', ''),
+                tags=('new',),
+            )
+            rows += 1
+
+        # Changed forms — one flat row per attribute diff
+        for entry in results.changed_forms:
+            if not _want('ticket_form', 'Changed'):
+                continue
+            name = entry['source'].get('name', '?')
+            inserted = 0
+            for attr, (src_val, tgt_val) in entry['diffs'].items():
+                src_str = str(src_val) if src_val not in (None, '') else ''
+                tgt_str = str(tgt_val) if tgt_val not in (None, '') else ''
+                if src_str == tgt_str:
+                    continue
+                self.diff_tree.insert(
+                    '', 'end',
+                    values=('Form', name, 'CHANGED', attr, src_str, tgt_str),
+                    tags=('attr_diff',),
+                )
+                inserted += 1
+            if inserted > 0:
+                rows += 1
+
+        # Unchanged forms
+        for entry in results.existing_forms:
+            if not _want('ticket_form', 'Unchanged'):
+                continue
+            self.diff_tree.insert(
+                '', 'end',
+                values=('Form', entry['source'].get('name', '?'), 'UNCHANGED', '', '', ''),
+                tags=('unchanged',),
+            )
+            rows += 1
+
+        total_new = len(results.new_fields) + len(results.new_forms)
+        total_changed = len(results.changed_fields) + len(results.changed_forms)
+        total_unchanged = len(results.existing_fields) + len(results.existing_forms)
+        summary = (
+            f"New: {total_new}  |  Changed: {total_changed}  |  Unchanged: {total_unchanged}"
+        )
+        if rows != total_new + total_changed + total_unchanged:
+            summary += f"  |  Showing: {rows}"
+        self.diff_summary_var.set(summary)
+
+        # Update tab title to signal data is ready
+        changed_label = f" ({total_changed} changes)" if total_changed else ""
+        self.notebook.tab(self.tab_diff, text=f" Diff Viewer{changed_label} ")
+
+    def _apply_diff_filter(self) -> None:
+        """Repopulate the diff viewer with the current filter applied."""
+        if self.analysis_results:
+            self._populate_diff_viewer()
+
     @staticmethod
     def _determine_field_context(
         field: Dict,
@@ -2569,7 +3148,7 @@ class ZendeskMigratorApp:
         elif 'organization' in url:
             return "(Org) Global"
         else:
-            forms = field_to_forms.get(field.get('id'), [])
+            forms = field_to_forms.get(field.get('id', 0), [])
             if forms:
                 return " | ".join(forms)
             return "Ticket"
@@ -2673,7 +3252,7 @@ class ZendeskMigratorApp:
             total = len(fields) + len(forms)
             count = 0
 
-            for field in fields:
+            for fld in fields:
                 if self._is_stop_requested():
                     self.log_with_level(
                         "[INFO] Import stopped during field processing",
@@ -2682,20 +3261,20 @@ class ZendeskMigratorApp:
                     break
 
                 # Check if field should be skipped
-                should_skip, skip_reason = self.logic.should_skip_field(field)
+                should_skip, skip_reason = self.logic.should_skip_field(fld)
                 if should_skip:
-                    field_type = field['system_object_type']
-                    reports[field_type].skipped.append(field['title'])
+                    field_type = fld['system_object_type']
+                    reports[field_type].skipped.append(fld['title'])
 
                     # Track lookup field skips separately
-                    if field.get('type') == 'lookup':
+                    if fld.get('type') == 'lookup':
                         skipped_lookups.append({
-                            'title': field['title'],
+                            'title': fld['title'],
                             'reason': skip_reason
                         })
 
                     self.log_with_level(
-                        f"[WARNING] Skipping '{field['title']}': {skip_reason}",
+                        f"[WARNING] Skipping '{fld['title']}': {skip_reason}",
                         LogLevel.WARNING
                     )
                     count += 1
@@ -2703,46 +3282,46 @@ class ZendeskMigratorApp:
                     continue
 
                 result = self._process_field_import(
-                    client, field, target_data, target_maps, strategy
+                    client, fld, target_data, target_maps, strategy
                 )
 
-                field_type = field['system_object_type']
+                field_type = fld['system_object_type']
                 report = reports[field_type]
 
                 if result['status'] == 'created':
-                    report.created.append(field['title'])
+                    report.created.append(fld['title'])
                     if result.get('id'):
-                        name_to_id_map[field['title']] = result['id']
+                        name_to_id_map[fld['title']] = result['id']
                         self.logic.log_rollback(
-                            field_type, result['id'], field['title']
+                            field_type, result['id'], fld['title']
                         )
                     self.log_with_level(
-                        f"[INFO] [+] Created: {field['title']}",
+                        f"[INFO] [+] Created: {fld['title']}",
                         LogLevel.INFO
                     )
 
                 elif result['status'] == 'updated':
-                    report.updated.append(field['title'])
+                    report.updated.append(fld['title'])
                     if result.get('id'):
-                        name_to_id_map[field['title']] = result['id']
+                        name_to_id_map[fld['title']] = result['id']
                     self.log_with_level(
-                        f"[INFO] [~] Updated: {field['title']}",
+                        f"[INFO] [~] Updated: {fld['title']}",
                         LogLevel.INFO
                     )
 
                 elif result['status'] == 'skipped':
-                    report.skipped.append(field['title'])
+                    report.skipped.append(fld['title'])
                     if result.get('id'):
-                        name_to_id_map[field['title']] = result['id']
+                        name_to_id_map[fld['title']] = result['id']
                     self.log_with_level(
-                        f"[DEBUG] [-] Skipped: {field['title']}",
+                        f"[DEBUG] [-] Skipped: {fld['title']}",
                         LogLevel.DEBUG
                     )
 
                 elif result['status'] == 'error':
-                    report.errors.append(field['title'])
+                    report.errors.append(fld['title'])
                     self.log_with_level(
-                        f"[ERROR] [!] Failed: {field['title']}",
+                        f"[ERROR] [!] Failed: {fld['title']}",
                         LogLevel.ERROR
                     )
 
@@ -2839,7 +3418,7 @@ class ZendeskMigratorApp:
 
         with open(csv_path, 'r', encoding='utf-8-sig') as f:
             reader = csv.DictReader(f)
-            reader.fieldnames = [name.strip() for name in reader.fieldnames]
+            reader.fieldnames = [name.strip() for name in (reader.fieldnames or [])]
 
             for row in reader:
                 row = {
@@ -2904,8 +3483,9 @@ class ZendeskMigratorApp:
                     }
                     fields.append(current_field)
 
-                elif row_type == 'option' and current_field:
-                    current_field['custom_field_options'].append({
+                elif row_type == 'option' and current_field is not None:
+                    opts = current_field.get('custom_field_options', [])  # pylint: disable=no-member
+                    opts.append({
                         'name': row.get('Name', ''),
                         'value': row.get('Tag', ''),
                         'default': row.get('Default', 'false').lower() == 'true'
@@ -2994,6 +3574,7 @@ class ZendeskMigratorApp:
         target_id = target_maps[field_type].get(lookup_key)
 
         if exists:
+            assert target_id is not None
             if strategy == ImportStrategy.CLONE.value:
                 result = client.create_field_safe(
                     f"{field_type}s.json", payload, field_type
@@ -3105,10 +3686,10 @@ class ZendeskMigratorApp:
 
         # Collect custom field IDs for this form from the current migration session.
         custom_field_ids = []
-        for field in fields:
-            if form['name'] in field.get('associated_forms', []):
-                if field['title'] in name_to_id_map:
-                    custom_field_ids.append(name_to_id_map[field['title']])
+        for fld in fields:
+            if form['name'] in fld.get('associated_forms', []):
+                if fld['title'] in name_to_id_map:
+                    custom_field_ids.append(name_to_id_map[fld['title']])
 
         # For UPDATE: preserve system fields already on the existing form so
         # they are not silently dropped from ticket_field_ids.
@@ -3171,6 +3752,7 @@ class ZendeskMigratorApp:
             payload['ticket_form']['end_user_conditions'] = end_user_conditions
 
         if exists:
+            assert target_id is not None
             if strategy == ImportStrategy.CLONE.value:
                 response = client._request('POST', 'ticket_forms.json', payload)
                 if response and response.status_code == 201:
