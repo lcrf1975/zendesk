@@ -9,4 +9,4 @@ Zendesk Scripts and Tools
 
 <b>Custom Object Manager</b>: A custom app that allows you to add, update, and edit Zendesk custom object records.
 
-<b>Advanced Viewer</b>: A custom app that replaces the system View feature in Zendesk.
+<b>Advanced Viewer</b>: A custom app replacement for Zendesk Support's native Views.
