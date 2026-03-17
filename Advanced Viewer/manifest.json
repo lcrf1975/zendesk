@@ -1,0 +1,22 @@
+{
+  "name": "Advanced Viewer",
+  "author": {
+    "name": "Your Name",
+    "email": "support@example.com"
+  },
+  "defaultLocale": "en",
+  "private": true,
+  "location": {
+    "support": {
+      "nav_bar": {
+        "url": "assets/iframe.html",
+        "flexible": true
+      },
+      "ticket_sidebar": {
+        "url": "assets/ticket_sidebar.html"
+      }
+    }
+  },
+  "version": "1.0.0",
+  "frameworkVersion": "2.0"
+}

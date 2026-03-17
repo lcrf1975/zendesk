@@ -1,0 +1,27 @@
+{
+  "name": "custom-views-app",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "webpack --mode development",
+    "build:prod": "webpack --mode production",
+    "package": "npm run build:prod && zip -r app.zip manifest.json assets/ translations/ --exclude assets/bundle.js.map"
+  },
+  "dependencies": {
+    "@zendeskgarden/react-buttons": "^9.15.0",
+    "@zendeskgarden/react-forms": "^9.15.0",
+    "@zendeskgarden/react-grid": "^9.0.0",
+    "@zendeskgarden/react-modals": "^9.15.0",
+    "@zendeskgarden/react-tables": "^9.15.0",
+    "@zendeskgarden/react-theming": "^9.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.20.0",
+    "@babel/preset-env": "^7.20.0",
+    "@babel/preset-react": "^7.20.0",
+    "babel-loader": "^9.1.0",
+    "webpack": "^5.75.0",
+    "webpack-cli": "^5.0.0"
+  }
+}

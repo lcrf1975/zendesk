@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18" fill="currentColor">
+  <!-- Left barrel (straight rectangle, no curves = no butterfly) -->
+  <rect x="2.5" y="1.5" width="4" height="6" rx="2"/>
+  <!-- Right barrel -->
+  <rect x="11.5" y="1.5" width="4" height="6" rx="2"/>
+  <!-- Bridge / nose piece connecting the two barrels -->
+  <rect x="6.5" y="4" width="5" height="2.5" rx="1.25"/>
+  <!-- Left lens ring (fill-rule evenodd = outer circle minus inner hole = donut) -->
+  <path fill-rule="evenodd" d="M4.5 13 m-4 0 a4 4 0 1 0 8 0 a4 4 0 1 0-8 0 Z M4.5 13 m-2.5 0 a2.5 2.5 0 1 0 5 0 a2.5 2.5 0 1 0-5 0 Z"/>
+  <!-- Right lens ring -->
+  <path fill-rule="evenodd" d="M13.5 13 m-4 0 a4 4 0 1 0 8 0 a4 4 0 1 0-8 0 Z M13.5 13 m-2.5 0 a2.5 2.5 0 1 0 5 0 a2.5 2.5 0 1 0-5 0 Z"/>
+</svg>
