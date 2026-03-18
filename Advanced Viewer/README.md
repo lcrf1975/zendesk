@@ -255,13 +255,6 @@ sed 's/currentColor/#374151/g' assets/icon_nav_bar.svg \
 - **The app is marked `"private": true`** in `manifest.json`, meaning it will never appear in the Zendesk Marketplace.
 - **`assets/bundle.js` is gitignored.** Only source files are tracked. Everyone who clones the repo must run `npm install && npm run build` before the app will work.
 
-### What to check before making the repository public
-
-- [ ] Replace `"author"` in `manifest.json` with real or team contact info
-- [ ] Confirm `assets/bundle.js` is NOT tracked (`git status` should not list it)
-- [ ] Run `git log --all --full-history -- "**/*.env"` to confirm no `.env` files were ever committed
-- [ ] Review any branch history for accidentally committed secrets
-
 ---
 
 ## Architecture notes
