@@ -1,7 +1,7 @@
 {
   "app": {
-    "name": "Dynamic CO Manager",
-    "short_description": "Manage Zendesk Custom Objects dynamically.",
-    "long_description": "An interface to dynamically create, read, update, and resolve lookup fields for Zendesk Custom Objects."
+    "name": "Custom Object Record Manager (Build A35)",
+    "short_description": "Create, view, update, and delete records for any Zendesk Custom Object.",
+    "long_description": "A full CRUD interface for Zendesk Custom Object records. Browse and filter records, manage lookup field values, inspect relationships, and see the usage and impact of each record across tickets, users, organizations, triggers, automations, views, and SLA policies."
   }
 }
