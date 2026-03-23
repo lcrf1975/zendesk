@@ -147,10 +147,12 @@ class ZendeskApp:
 
         # Stop Signal
         self.stop_event = threading.Event()
+        self._map_lock = threading.Lock()
 
         self.count_found_var = tk.StringVar(value="Found: 0")
         self.count_selected_var = tk.StringVar(value="Selected: 0")
         self.all_checked = False
+        self.selected_count = 0
 
         # Filter Vars
         self.filter_mode_var = tk.StringVar(value="Fields & Forms")
@@ -469,18 +471,15 @@ class ZendeskApp:
         )
         self.tree_frame.pack(fill="both", expand=True, pady=(0, 15))
 
-        # Initial Columns (Fields Mode)
-        # Added "num" column here
-        cols = ("num", "check", "type", "usage", "status", "date", "title", "id")
         self.tree = ttk.Treeview(
-            self.tree_frame, columns=cols, show="headings", selectmode="none"
+            self.tree_frame, columns=("num",), show="headings", selectmode="none"
         )
         self.setup_tree_columns("Fields & Forms")
 
         sb = ttk.Scrollbar(
             self.tree_frame, orient="vertical", command=self.tree.yview
         )
-        self.tree.configure(yscroll=sb.set)
+        self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
@@ -650,18 +649,16 @@ class ZendeskApp:
         self.entry_email.configure(state=state)
         self.entry_token.configure(state=state)
 
-        self.combo_mode.configure(state=state if enabled else 'disabled')
-        self.combo_status.configure(state=state if enabled else 'disabled')
+        self.combo_mode.configure(state=state)
+        self.combo_status.configure(state=state)
 
         if self.filter_mode_var.get() == "Fields & Forms":
-            self.combo_category.configure(
-                state=state if enabled else 'disabled'
-            )
+            self.combo_category.configure(state=state)
         else:
             self.combo_category.configure(state='disabled')
 
         if self.filter_mode_var.get() == "Dynamic Content":
-            self.combo_usage.configure(state=state if enabled else 'disabled')
+            self.combo_usage.configure(state=state)
         else:
             self.combo_usage.configure(state='disabled')
 
@@ -683,6 +680,15 @@ class ZendeskApp:
             elapsed = time.time() - self.start_time
             self.time_info_var.set(f"Elapsed: {self.format_time(elapsed)}")
             self.root.after(500, self.update_clock)
+
+    def _update_status(self, status=None, progress=None):
+        """Thread-safe status/progress update scheduled on the main thread."""
+        def _do():
+            if status is not None:
+                self.status_var.set(status)
+            if progress is not None:
+                self.progress_var.set(progress)
+        self.root.after(0, _do)
 
     # --- STOP LOGIC ---
     def stop_operation(self):
@@ -712,19 +718,32 @@ class ZendeskApp:
             defaultextension=".json", filetypes=[("JSON", "*.json")]
         )
         if f:
-            data = {
-                "subdomain": self.subdomain_var.get(),
-                "email": self.email_var.get(),
-                "token": self.token_var.get()
-            }
-            with open(f, 'w') as file:
-                json.dump(data, file)
-            logging.info("Configuration saved.")
+            try:
+                data = {
+                    "subdomain": self.subdomain_var.get(),
+                    "email": self.email_var.get(),
+                    "token": self.token_var.get()
+                }
+                with open(f, 'w') as file:
+                    json.dump(data, file)
+                logging.info("Configuration saved.")
+            except Exception as e:
+                logging.error(f"Config Save Error: {e}")
 
     def get_auth(self):
         return (f"{self.email_var.get()}/token", self.token_var.get())
 
     def start_fetch_thread(self):
+        sub = self.subdomain_var.get().strip()
+        email = self.email_var.get().strip()
+        token = self.token_var.get().strip()
+        if not sub or not email or not token:
+            messagebox.showwarning(
+                "Missing Credentials",
+                "Please enter subdomain, email, and token before fetching."
+            )
+            return
+
         self.stop_event.clear()
         self.set_ui_state(enabled=False)
         self.progress_var.set(0)
@@ -733,9 +752,6 @@ class ZendeskApp:
         self.start_time = time.time()
         self.update_clock()
 
-        sub = self.subdomain_var.get()
-        email = self.email_var.get()
-        token = self.token_var.get()
         auth = (f"{email}/token", token)
 
         threading.Thread(
@@ -745,13 +761,6 @@ class ZendeskApp:
         ).start()
 
     def fetch_data_thread(self, sub, auth):
-        if not sub:
-            logging.warning("Please enter a subdomain.")
-            self.root.after(0, lambda: self.set_ui_state(True))
-            self.status_var.set("Missing Subdomain")
-            self.is_working = False
-            return
-
         logging.info("Starting data fetch...")
         temp_items_map = {}
         aux_data = {}
@@ -780,17 +789,19 @@ class ZendeskApp:
             for ep, label in main_endpoints:
                 if self.stop_event.is_set():
                     break
-                self.status_var.set(f"Fetching {label}s...")
-                self.progress_var.set((current_op / total_ops) * 80)
+                self._update_status(
+                    status=f"Fetching {label}s...",
+                    progress=(current_op / total_ops) * 80
+                )
                 current_op += 1
 
                 url = f"{base_url}/{ep}.json"
                 while url:
                     if self.stop_event.is_set():
                         break
-                    resp = requests.get(url, auth=auth)
-                    if resp.status_code != 200:
-                        logging.error(f"API Error {resp.status_code}: {label}")
+                    resp = self.safe_request('GET', url, auth=auth)
+                    if not resp or resp.status_code != 200:
+                        logging.error(f"API Error {resp.status_code if resp else 'Timeout'}: {label}")
                         break
 
                     data = resp.json()
@@ -867,16 +878,18 @@ class ZendeskApp:
                 for ep, label in safety_endpoints:
                     if self.stop_event.is_set():
                         break
-                    self.status_var.set(f"Scanning {label}s for Safety...")
-                    self.progress_var.set((current_op / total_ops) * 80)
+                    self._update_status(
+                        status=f"Scanning {label}s for Safety...",
+                        progress=(current_op / total_ops) * 80
+                    )
                     current_op += 1
 
                     url = f"{base_url}/{ep}.json"
                     while url:
                         if self.stop_event.is_set():
                             break
-                        resp = requests.get(url, auth=auth)
-                        if resp.status_code != 200:
+                        resp = self.safe_request('GET', url, auth=auth)
+                        if not resp or resp.status_code != 200:
                             break
                         data = resp.json()
                         items_list = data.get(ep, [])
@@ -896,8 +909,10 @@ class ZendeskApp:
 
         # --- DEPENDENCY ANALYSIS ---
         if not self.stop_event.is_set():
-            self.status_var.set("Deep Safety Scan (Cross-Referencing)...")
-            self.progress_var.set(85)
+            self._update_status(
+                status="Deep Safety Scan (Cross-Referencing)...",
+                progress=85
+            )
 
             field_titles = {
                 v['title'].strip(): v['type']
@@ -931,8 +946,7 @@ class ZendeskApp:
         if self.stop_event.is_set():
             logging.warning("Fetch operation stopped by user.")
 
-        self.status_var.set("Finalizing...")
-        self.progress_var.set(95)
+        self._update_status(status="Finalizing...", progress=95)
         self.root.after(0, lambda: self.finish_fetch_ui(temp_items_map))
 
     def finish_fetch_ui(self, new_data):
@@ -940,6 +954,7 @@ class ZendeskApp:
         self.root.update_idletasks()
 
         self.items_map = new_data
+        self.selected_count = 0
         self.unique_dates.clear()
 
         total_time = time.time() - self.start_time
@@ -956,8 +971,7 @@ class ZendeskApp:
         self.is_working = False
         self.progress_var.set(0)
 
-        # Reset Filter UI
-        self.filter_mode_var.set("Fields & Forms")
+        # Refresh view preserving current mode and filters
         self.on_mode_change(None)
 
     # --- FILTERING LOGIC ---
@@ -1033,7 +1047,6 @@ class ZendeskApp:
             self.date_listbox.insert(tk.END, d)
 
     def apply_filters_only(self, event=None):
-        self.tree.pack_forget()
         self.tree.delete(*self.tree.get_children())
         self.visible_items = []
 
@@ -1089,13 +1102,8 @@ class ZendeskApp:
                 ph = data['extra'].get('placeholder', '')
                 txt = data['extra'].get('flatten_text', '')
                 usage_display = ""
-                usage_icon = ""
                 if usage_list:
                     usage_display = ", ".join(usage_list)
-                    if "Macro" in usage_list or "Trigger" in usage_list:
-                        usage_icon = ICON_WARN
-                    else:
-                        usage_icon = ICON_LINK
                 self.tree.insert(
                     "",
                     "end",
@@ -1115,7 +1123,6 @@ class ZendeskApp:
                     )
                 )
 
-        self.tree.pack(side="left", fill="both", expand=True)
         self.update_counter()
         self.count_found_var.set(f"Found: {len(self.visible_items)}")
 
@@ -1129,7 +1136,9 @@ class ZendeskApp:
                 self.toggle_check(iid)
 
     def toggle_check(self, iid):
-        self.items_map[iid]['checked'] = not self.items_map[iid]['checked']
+        was_checked = self.items_map[iid]['checked']
+        self.items_map[iid]['checked'] = not was_checked
+        self.selected_count += -1 if was_checked else 1
         icon = ICON_CHECKED if self.items_map[iid]['checked'] else ICON_UNCHECKED
         vals = list(self.tree.item(iid, "values"))
         # Update index 1 (Checkbox) not 0
@@ -1138,22 +1147,23 @@ class ZendeskApp:
         self.update_counter()
 
     def toggle_all_selection(self):
-        self.all_checked = not self.all_checked
+        all_visible_checked = bool(self.visible_items) and all(
+            self.items_map[iid]['checked'] for iid in self.visible_items
+        )
+        self.all_checked = not all_visible_checked
         icon = ICON_CHECKED if self.all_checked else ICON_UNCHECKED
         for iid in self.visible_items:
+            if self.items_map[iid]['checked'] != self.all_checked:
+                self.selected_count += 1 if self.all_checked else -1
             self.items_map[iid]['checked'] = self.all_checked
             vals = list(self.tree.item(iid, "values"))
-            # Update index 1 (Checkbox)
             vals[1] = icon
             self.tree.item(iid, values=vals)
         self.tree.heading("check", text=icon)
         self.update_counter()
 
     def update_counter(self):
-        total_selected = sum(
-            1 for v in self.items_map.values() if v['checked']
-        )
-        self.count_selected_var.set(f"Selected: {total_selected}")
+        self.count_selected_var.set(f"Selected: {self.selected_count}")
 
     def confirm_delete(self):
         to_delete = [v for k, v in self.items_map.items() if v['checked']]
@@ -1206,6 +1216,7 @@ class ZendeskApp:
 
     def safe_request(self, method, url, **kwargs):
         """Retries request on 429 (Rate Limit) errors."""
+        kwargs.setdefault('timeout', 30)
         retries = 3
         for i in range(retries):
             try:
@@ -1219,8 +1230,9 @@ class ZendeskApp:
                     continue
                 return response
             except requests.RequestException as e:
-                logging.error(f"Request Exception: {e}")
-                return None
+                logging.warning(f"Request Exception (attempt {i + 1}/{retries}): {e}")
+                if i < retries - 1:
+                    time.sleep(2)
         return None
 
     def process_single_item(self, item, sub, auth):
@@ -1238,10 +1250,11 @@ class ZendeskApp:
                 dc_ph = item['extra'].get('placeholder')
                 dc_tx = item['extra'].get('flatten_text')
                 if dc_ph and dc_tx:
-                    targets = [
-                        v for v in self.items_map.values()
-                        if v['title'].strip() == dc_ph.strip()
-                    ]
+                    with self._map_lock:
+                        targets = [
+                            v for v in self.items_map.values()
+                            if v['title'].strip() == dc_ph.strip()
+                        ]
                     for t in targets:
                         if self.stop_event.is_set():
                             return (False, item['id'], "Stopped during flatten")
@@ -1286,12 +1299,13 @@ class ZendeskApp:
             if r and r.status_code in [204, 200]:
                 return (True, item['id'], f"Deleted: {item['title']}")
             else:
+                if r is None:
+                    return (False, item['id'], f"Failed: {item['title']} (Timeout)")
                 try:
                     err = r.json().get('error', 'Unknown')
                     return (False, item['id'], f"Failed: {item['title']} - {err}")
                 except Exception:
-                    code = r.status_code if r else "Timeout"
-                    return (False, item['id'], f"Failed: {item['title']} ({code})")
+                    return (False, item['id'], f"Failed: {item['title']} ({r.status_code})")
 
         except Exception as e:
             return (False, item['id'], f"Error: {item['title']} - {str(e)}")
@@ -1300,7 +1314,7 @@ class ZendeskApp:
         logging.info("--- BATCH DELETE STARTED (Multi-Threaded) ---")
         success = 0
         total = len(items)
-        self.progress_var.set(0)
+        self._update_status(progress=0)
 
         # Using 5 workers to be safe, but now backed by safe_request rate limiting
         with ThreadPoolExecutor(max_workers=5) as executor:
@@ -1318,8 +1332,9 @@ class ZendeskApp:
                     if result_ok:
                         success += 1
                         logging.info(f"✔ {msg}")
-                        if item_id in self.items_map:
-                            self.items_map[item_id]['deleted'] = True
+                        with self._map_lock:
+                            if item_id in self.items_map:
+                                self.items_map[item_id]['deleted'] = True
                     else:
                         if "Stopped" in msg:
                             logging.warning(msg)
@@ -1329,16 +1344,16 @@ class ZendeskApp:
                     logging.error(f"Thread Error on {item['title']}: {e}")
 
                 # Update UI *after* completion to prevent lag
-                progress = ((i + 1) / total) * 100
-                self.progress_var.set(progress)
-                self.status_var.set(
-                    f"Processed {i + 1}/{total} items..."
+                self._update_status(
+                    status=f"Processed {i + 1}/{total} items...",
+                    progress=((i + 1) / total) * 100
                 )
 
         self.root.after(0, lambda: self.finish_delete_ui(success, total))
 
     def finish_delete_ui(self, success, total):
         keys = [k for k, v in self.items_map.items() if v.get('deleted')]
+        self.selected_count -= len(keys)
         for k in keys:
             del self.items_map[k]
 
