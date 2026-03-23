@@ -18,7 +18,9 @@ from zendesk_dc_manager.config import (
     SOURCE_TRANSLATED,
     SOURCE_CACHE,
     SOURCE_FAILED,
-    SOURCE_MANUAL,
+    LOCALE_ID_PT_BR,
+    LOCALE_ID_EN_US,
+    LOCALE_ID_ES,
 )
 from zendesk_dc_manager.api import ZendeskAPI
 from zendesk_dc_manager.translator import TranslationService
@@ -136,6 +138,13 @@ class ZendeskController:
         self.dc_by_name: Dict[str, Dict[str, Any]] = {}
         self.backup_folder: str = ""
         self.default_locale: Dict[str, Any] = {}
+        self.pt_locale_id: int = LOCALE_ID_PT_BR
+        self.en_locale_id: int = LOCALE_ID_EN_US
+        self.es_locale_id: int = LOCALE_ID_ES
+        # When set to a dict, _update_object_with_dc queues option updates
+        # instead of applying them immediately; execute_changes flushes them
+        # as batched GET+PUT calls (one per parent field, not one per option).
+        self._deferred_option_updates: Optional[Dict] = None
 
         self._stop_flag = False
         self._stop_lock = threading.Lock()
@@ -195,13 +204,30 @@ class ZendeskController:
                 locale_name = self.default_locale.get('name', 'Unknown')
                 locale_code = self.default_locale.get('locale', 'Unknown')
                 log_signal.emit(
-                    f"Default Locale: {locale_name} ({locale_code})"
+                    f"Agent Locale: {locale_name} ({locale_code})"
                 )
             except Exception as e:
                 log_signal.emit(
                     f"Warning: Could not fetch default locale: {e}"
                 )
                 self.default_locale = {}
+
+            try:
+                locales = self.api.get_locales()
+                by_code = {loc['locale'].lower(): loc['id'] for loc in locales}
+                self.pt_locale_id = (
+                    by_code.get('pt-br') or by_code.get('pt') or LOCALE_ID_PT_BR
+                )
+                self.en_locale_id = (
+                    by_code.get('en-us') or by_code.get('en') or LOCALE_ID_EN_US
+                )
+                self.es_locale_id = by_code.get('es') or LOCALE_ID_ES
+                log_signal.emit(
+                    f"Locale IDs resolved: PT={self.pt_locale_id}, "
+                    f"EN={self.en_locale_id}, ES={self.es_locale_id}"
+                )
+            except Exception as e:
+                log_signal.emit(f"Warning: Could not resolve locale IDs: {e}")
 
             return f"Connected as {user_name} ({user_role})"
 
@@ -257,7 +283,7 @@ class ZendeskController:
         }
 
         log_signal.emit("Fetching existing Dynamic Content...")
-        progress_signal.emit(0, 100, "Fetching DC items...")
+        progress_signal.emit(0, 0, "Fetching DC items...")
 
         try:
             dc_items = self.api.get_dynamic_content_items()
@@ -500,104 +526,116 @@ class ZendeskController:
 
         return None
 
-    def _scan_ticket_fields(self, log_signal) -> Tuple[int, int]:
-        """Scan ticket fields and their options."""
+    # =========================================================================
+    # GENERIC SCAN HELPERS
+    # =========================================================================
+
+    def _scan_named_objects(
+        self,
+        log_signal,
+        api_method,
+        obj_type: str,
+        name_field: str = 'title',
+        raw_field: str = None,
+        extra_func=None,
+        is_system_func=None,
+    ) -> int:
+        """Generic scanner for simple named objects without sub-items."""
+        raw_field = raw_field or f'raw_{name_field}'
+        count = 0
+        try:
+            items = api_method()
+            for item in items:
+                if self._should_stop():
+                    break
+
+                obj_id = item.get('id')
+                name = item.get(name_field, '')
+                raw = item.get(raw_field, name)
+                is_system = is_system_func(item) if is_system_func else False
+                extra = extra_func(item) if extra_func else None
+
+                dc_match = DC_PLACEHOLDER_PATTERN.search(str(raw))
+                kwargs = dict(
+                    obj_type=obj_type,
+                    obj_id=obj_id,
+                    field_name=name_field,
+                    current_value=name,
+                    raw_value=raw,
+                    is_system=is_system,
+                )
+                if extra:
+                    kwargs['extra'] = extra
+                if dc_match:
+                    placeholder = dc_match.group(0)
+                    kwargs['dc_placeholder'] = placeholder
+                    kwargs['dc_info'] = self._find_dc_by_placeholder(
+                        placeholder
+                    )
+                self._add_work_item(**kwargs)
+                count += 1
+        except Exception as e:
+            log_signal.emit(f"  Error scanning {obj_type}: {e}")
+            logger.error(f"Error scanning {obj_type}: {e}")
+        return count
+
+    def _scan_fields_with_options(
+        self,
+        log_signal,
+        api_method,
+        field_type: str,
+        option_type: str,
+        field_extra_func=None,
+        option_extra_func=None,
+        is_system_func=None,
+    ) -> Tuple[int, int]:
+        """Generic scanner for fields with custom_field_options sub-items.
+
+        Returns:
+            Tuple of (field_count, system_field_count)
+        """
         count = 0
         system_count = 0
-
-        # Field keys that are system-managed (Zendesk protects these)
-        SYSTEM_FIELD_KEYS = frozenset([
-            'approval_status',
-            'zd_approval_status',
-            'resolution_type',
-            'zd_resolution_type',
-            'zd_automated_resolution',
-        ])
-
-        # Patterns in field keys that indicate system fields
-        SYSTEM_KEY_PATTERNS = [
-            'zd_es_approval',
-            'zd_automated',
-            'zd_resolution',
-        ]
-
         try:
-            fields = self.api.get_ticket_fields()
-
+            fields = api_method()
             for field in fields:
                 if self._should_stop():
                     break
 
                 field_id = field.get('id')
-                field_type = field.get('type', '')
-                field_key = field.get('key', '')
                 title = field.get('title', '')
                 raw_title = field.get('raw_title', title)
-
-                # Check if system field by type
-                is_system = field_type in SYSTEM_FIELD_TYPES
-
-                # Check if system field by key
-                if not is_system and field_key:
-                    field_key_lower = field_key.lower()
-                    if field_key_lower in SYSTEM_FIELD_KEYS:
-                        is_system = True
-                    else:
-                        for pattern in SYSTEM_KEY_PATTERNS:
-                            if pattern in field_key_lower:
-                                is_system = True
-                                break
-
-                # Check if system field by title patterns
-                if not is_system:
-                    title_lower = title.lower()
-                    if any(p in title_lower for p in [
-                        'approval status', 'status de aprovação',
-                        'resolution type', 'tipo de resolução',
-                        'tipo de resolucao'
-                    ]):
-                        is_system = True
-
+                is_system = is_system_func(field) if is_system_func else False
                 if is_system:
                     system_count += 1
-                    logger.debug(
-                        f"System field: {field_id} - {title} "
-                        f"(type={field_type}, key={field_key})"
-                    )
 
+                field_extra = (
+                    field_extra_func(field) if field_extra_func else None
+                )
                 dc_match = DC_PLACEHOLDER_PATTERN.search(str(raw_title))
-
+                kwargs = dict(
+                    obj_type=field_type,
+                    obj_id=field_id,
+                    field_name='title',
+                    current_value=title,
+                    raw_value=raw_title,
+                    is_system=is_system,
+                )
+                if field_extra:
+                    kwargs['extra'] = field_extra
                 if dc_match:
                     placeholder = dc_match.group(0)
-                    dc_info = self._find_dc_by_placeholder(placeholder)
-
-                    self._add_work_item(
-                        obj_type='ticket_field',
-                        obj_id=field_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title,
-                        dc_placeholder=placeholder,
-                        dc_info=dc_info,
-                        is_system=is_system,
-                        extra={'field_type': field_type, 'field_key': field_key}
+                    kwargs['dc_placeholder'] = placeholder
+                    kwargs['dc_info'] = self._find_dc_by_placeholder(
+                        placeholder
                     )
-                else:
-                    self._add_work_item(
-                        obj_type='ticket_field',
-                        obj_id=field_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title,
-                        is_system=is_system,
-                        extra={'field_type': field_type, 'field_key': field_key}
-                    )
-
+                self._add_work_item(**kwargs)
                 count += 1
 
-                # Process field options - inherit system flag from parent
-                options = field.get('custom_field_options', [])
-                for opt in options:
+                for opt in field.get('custom_field_options', []):
+                    if self._should_stop():
+                        break
+
                     opt_id = opt.get('id')
                     opt_name = opt.get('name', '')
                     opt_raw = opt.get('raw_name', opt_name)
@@ -608,751 +646,261 @@ class ZendeskController:
                         f"value={opt_value}"
                     )
 
-                    dc_match = DC_PLACEHOLDER_PATTERN.search(str(opt_raw))
+                    if option_extra_func:
+                        opt_extra = option_extra_func(field, opt)
+                    else:
+                        opt_extra = {'option_value': opt_value}
+                    # Store parent field title so _apply_single_item can build
+                    # a namespaced DC name: {parent_name}_{option_name}
+                    opt_extra['parent_name'] = title
 
+                    dc_match = DC_PLACEHOLDER_PATTERN.search(str(opt_raw))
+                    opt_kwargs = dict(
+                        obj_type=option_type,
+                        obj_id=opt_id,
+                        field_name='name',
+                        current_value=opt_name,
+                        raw_value=opt_raw,
+                        parent_id=field_id,
+                        is_system=is_system,
+                        extra=opt_extra,
+                    )
                     if dc_match:
                         placeholder = dc_match.group(0)
-                        dc_info = self._find_dc_by_placeholder(placeholder)
-
-                        self._add_work_item(
-                            obj_type='ticket_field_option',
-                            obj_id=opt_id,
-                            field_name='name',
-                            current_value=opt_name,
-                            raw_value=opt_raw,
-                            dc_placeholder=placeholder,
-                            dc_info=dc_info,
-                            parent_id=field_id,
-                            is_system=is_system,
-                            extra={
-                                'field_type': field_type,
-                                'field_key': field_key,
-                                'option_value': opt_value
-                            }
+                        opt_kwargs['dc_placeholder'] = placeholder
+                        opt_kwargs['dc_info'] = self._find_dc_by_placeholder(
+                            placeholder
                         )
-                    else:
-                        self._add_work_item(
-                            obj_type='ticket_field_option',
-                            obj_id=opt_id,
-                            field_name='name',
-                            current_value=opt_name,
-                            raw_value=opt_raw,
-                            parent_id=field_id,
-                            is_system=is_system,
-                            extra={
-                                'field_type': field_type,
-                                'field_key': field_key,
-                                'option_value': opt_value
-                            }
-                        )
-
-            log_signal.emit(
-                f"  Found {count} ticket fields ({system_count} system)"
-            )
+                    self._add_work_item(**opt_kwargs)
 
         except Exception as e:
-            log_signal.emit(f"  Error scanning ticket fields: {e}")
-            logger.error(f"Error scanning ticket fields: {e}")
+            log_signal.emit(f"  Error scanning {field_type}: {e}")
+            logger.error(f"Error scanning {field_type}: {e}")
+        return count, system_count
 
+    # =========================================================================
+    # SCAN METHODS
+    # =========================================================================
+
+    def _scan_ticket_fields(self, log_signal) -> Tuple[int, int]:
+        """Scan ticket fields and their options."""
+        SYSTEM_FIELD_KEYS = frozenset([
+            'approval_status',
+            'zd_approval_status',
+            'resolution_type',
+            'zd_resolution_type',
+            'zd_automated_resolution',
+        ])
+        SYSTEM_KEY_PATTERNS = [
+            'zd_es_approval',
+            'zd_automated',
+            'zd_resolution',
+        ]
+        SYSTEM_TITLE_PATTERNS = [
+            'approval status', 'status de aprovação',
+            'resolution type', 'tipo de resolução', 'tipo de resolucao',
+        ]
+
+        def is_system(field):
+            field_type = field.get('type', '')
+            field_key = field.get('key', '')
+            title = field.get('title', '')
+            if field_type in SYSTEM_FIELD_TYPES:
+                logger.debug(
+                    f"System field: {field.get('id')} - {title} "
+                    f"(type={field_type}, key={field_key})"
+                )
+                return True
+            if field_key:
+                fk = field_key.lower()
+                if fk in SYSTEM_FIELD_KEYS:
+                    logger.debug(
+                        f"System field: {field.get('id')} - {title} "
+                        f"(type={field_type}, key={field_key})"
+                    )
+                    return True
+                if any(p in fk for p in SYSTEM_KEY_PATTERNS):
+                    logger.debug(
+                        f"System field: {field.get('id')} - {title} "
+                        f"(type={field_type}, key={field_key})"
+                    )
+                    return True
+            if any(p in title.lower() for p in SYSTEM_TITLE_PATTERNS):
+                logger.debug(
+                    f"System field: {field.get('id')} - {title} "
+                    f"(type={field_type}, key={field_key})"
+                )
+                return True
+            return False
+
+        def field_extra(field):
+            return {
+                'field_type': field.get('type', ''),
+                'field_key': field.get('key', ''),
+            }
+
+        def option_extra(field, opt):
+            return {
+                'field_type': field.get('type', ''),
+                'field_key': field.get('key', ''),
+                'option_value': opt.get('value', ''),
+            }
+
+        count, system_count = self._scan_fields_with_options(
+            log_signal,
+            self.api.get_ticket_fields,
+            'ticket_field',
+            'ticket_field_option',
+            field_extra_func=field_extra,
+            option_extra_func=option_extra,
+            is_system_func=is_system,
+        )
+        log_signal.emit(
+            f"  Found {count} ticket fields ({system_count} system)"
+        )
         return count, system_count
 
     def _scan_ticket_forms(self, log_signal) -> int:
         """Scan ticket forms."""
-        count = 0
-
-        try:
-            forms = self.api.get_ticket_forms()
-
-            for form in forms:
-                if self._should_stop():
-                    break
-
-                form_id = form.get('id')
-                name = form.get('name', '')
-                raw_name = form.get('raw_name', name)
-
-                dc_match = DC_PLACEHOLDER_PATTERN.search(str(raw_name))
-
-                if dc_match:
-                    placeholder = dc_match.group(0)
-                    dc_info = self._find_dc_by_placeholder(placeholder)
-
-                    self._add_work_item(
-                        obj_type='ticket_form',
-                        obj_id=form_id,
-                        field_name='name',
-                        current_value=name,
-                        raw_value=raw_name,
-                        dc_placeholder=placeholder,
-                        dc_info=dc_info
-                    )
-                else:
-                    self._add_work_item(
-                        obj_type='ticket_form',
-                        obj_id=form_id,
-                        field_name='name',
-                        current_value=name,
-                        raw_value=raw_name
-                    )
-
-                count += 1
-
-            log_signal.emit(f"  Found {count} ticket forms")
-
-        except Exception as e:
-            log_signal.emit(f"  Error scanning ticket forms: {e}")
-            logger.error(f"Error scanning ticket forms: {e}")
-
+        count = self._scan_named_objects(
+            log_signal, self.api.get_ticket_forms, 'ticket_form',
+            name_field='name', raw_field='raw_name',
+        )
+        log_signal.emit(f"  Found {count} ticket forms")
         return count
 
     def _scan_custom_statuses(self, log_signal) -> int:
         """Scan custom ticket statuses."""
-        count = 0
-
-        # Status categories that are system-protected
-        PROTECTED_STATUS_CATEGORIES = frozenset([
-            'hold',  # "Em espera" / "On-hold" - protected by Zendesk
-        ])
-
-        # Status category names that indicate default/system statuses
+        PROTECTED_STATUS_CATEGORIES = frozenset(['hold'])
         SYSTEM_STATUS_NAMES = frozenset([
-            'new', 'open', 'pending', 'hold', 'solved', 'closed',
+            'new', 'open', 'pending', 'hold', 'on-hold', 'on hold',
+            'solved', 'closed', 'deleted',
             'novo', 'aberto', 'pendente', 'em espera', 'resolvido',
             'nuevo', 'abierto', 'pendiente', 'en espera', 'resuelto',
         ])
 
-        try:
-            statuses = self.api.get_custom_statuses()
-
-            for status in statuses:
-                if self._should_stop():
-                    break
-
-                status_id = status.get('id')
-                agent_label = status.get('agent_label', '')
-                raw_agent_label = status.get('raw_agent_label', agent_label)
-                status_category = status.get('status_category', '')
-                is_default = status.get('default', False)
-
-                # Determine if this is a system/protected status
-                is_system = False
-
-                # Check if it's in a protected category
-                if status_category.lower() in PROTECTED_STATUS_CATEGORIES:
-                    is_system = True
+        def is_system(status):
+            category = status.get('status_category', '').lower()
+            if category in PROTECTED_STATUS_CATEGORIES:
+                logger.debug(
+                    f"Protected status category: {status.get('id')} - "
+                    f"{status.get('agent_label')} (category={category})"
+                )
+                return True
+            if status.get('default', False):
+                label = status.get('agent_label', '').lower().strip()
+                if label in SYSTEM_STATUS_NAMES:
                     logger.debug(
-                        f"Protected status category: {status_id} - "
-                        f"{agent_label} (category={status_category})"
+                        f"Default system status: {status.get('id')} - "
+                        f"{status.get('agent_label')} (default=True)"
                     )
+                    return True
+            return False
 
-                # Check if it's a default status with system-like name
-                if is_default:
-                    agent_label_lower = agent_label.lower().strip()
-                    if agent_label_lower in SYSTEM_STATUS_NAMES:
-                        is_system = True
-                        logger.debug(
-                            f"Default system status: {status_id} - "
-                            f"{agent_label} (default={is_default})"
-                        )
+        def status_extra(status):
+            return {
+                'status_category': status.get('status_category', ''),
+                'is_default': status.get('default', False),
+            }
 
-                dc_match = DC_PLACEHOLDER_PATTERN.search(str(raw_agent_label))
-
-                if dc_match:
-                    placeholder = dc_match.group(0)
-                    dc_info = self._find_dc_by_placeholder(placeholder)
-
-                    self._add_work_item(
-                        obj_type='custom_status',
-                        obj_id=status_id,
-                        field_name='agent_label',
-                        current_value=agent_label,
-                        raw_value=raw_agent_label,
-                        dc_placeholder=placeholder,
-                        dc_info=dc_info,
-                        is_system=is_system,
-                        extra={
-                            'status_category': status_category,
-                            'is_default': is_default
-                        }
-                    )
-                else:
-                    self._add_work_item(
-                        obj_type='custom_status',
-                        obj_id=status_id,
-                        field_name='agent_label',
-                        current_value=agent_label,
-                        raw_value=raw_agent_label,
-                        is_system=is_system,
-                        extra={
-                            'status_category': status_category,
-                            'is_default': is_default
-                        }
-                    )
-
-                count += 1
-
-            log_signal.emit(f"  Found {count} custom statuses")
-
-        except Exception as e:
-            log_signal.emit(f"  Error scanning custom statuses: {e}")
-            logger.error(f"Error scanning custom statuses: {e}")
-
+        count = self._scan_named_objects(
+            log_signal, self.api.get_custom_statuses, 'custom_status',
+            name_field='agent_label', raw_field='raw_agent_label',
+            extra_func=status_extra, is_system_func=is_system,
+        )
+        log_signal.emit(f"  Found {count} custom statuses")
         return count
 
     def _scan_user_fields(self, log_signal) -> int:
         """Scan user fields and their options."""
-        count = 0
-
-        try:
-            fields = self.api.get_user_fields()
-
-            for field in fields:
-                if self._should_stop():
-                    break
-
-                field_id = field.get('id')
-                title = field.get('title', '')
-                raw_title = field.get('raw_title', title)
-
-                dc_match = DC_PLACEHOLDER_PATTERN.search(str(raw_title))
-
-                if dc_match:
-                    placeholder = dc_match.group(0)
-                    dc_info = self._find_dc_by_placeholder(placeholder)
-
-                    self._add_work_item(
-                        obj_type='user_field',
-                        obj_id=field_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title,
-                        dc_placeholder=placeholder,
-                        dc_info=dc_info
-                    )
-                else:
-                    self._add_work_item(
-                        obj_type='user_field',
-                        obj_id=field_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title
-                    )
-
-                count += 1
-
-                options = field.get('custom_field_options', [])
-                for opt in options:
-                    opt_id = opt.get('id')
-                    opt_name = opt.get('name', '')
-                    opt_raw = opt.get('raw_name', opt_name)
-                    opt_value = opt.get('value', '')
-
-                    dc_match = DC_PLACEHOLDER_PATTERN.search(str(opt_raw))
-
-                    if dc_match:
-                        placeholder = dc_match.group(0)
-                        dc_info = self._find_dc_by_placeholder(placeholder)
-
-                        self._add_work_item(
-                            obj_type='user_field_option',
-                            obj_id=opt_id,
-                            field_name='name',
-                            current_value=opt_name,
-                            raw_value=opt_raw,
-                            dc_placeholder=placeholder,
-                            dc_info=dc_info,
-                            parent_id=field_id,
-                            extra={'option_value': opt_value}
-                        )
-                    else:
-                        self._add_work_item(
-                            obj_type='user_field_option',
-                            obj_id=opt_id,
-                            field_name='name',
-                            current_value=opt_name,
-                            raw_value=opt_raw,
-                            parent_id=field_id,
-                            extra={'option_value': opt_value}
-                        )
-
-            log_signal.emit(f"  Found {count} user fields")
-
-        except Exception as e:
-            log_signal.emit(f"  Error scanning user fields: {e}")
-            logger.error(f"Error scanning user fields: {e}")
-
+        count, _ = self._scan_fields_with_options(
+            log_signal, self.api.get_user_fields,
+            'user_field', 'user_field_option',
+        )
+        log_signal.emit(f"  Found {count} user fields")
         return count
 
     def _scan_org_fields(self, log_signal) -> int:
         """Scan organization fields and their options."""
-        count = 0
-
-        try:
-            fields = self.api.get_organization_fields()
-
-            for field in fields:
-                if self._should_stop():
-                    break
-
-                field_id = field.get('id')
-                title = field.get('title', '')
-                raw_title = field.get('raw_title', title)
-
-                dc_match = DC_PLACEHOLDER_PATTERN.search(str(raw_title))
-
-                if dc_match:
-                    placeholder = dc_match.group(0)
-                    dc_info = self._find_dc_by_placeholder(placeholder)
-
-                    self._add_work_item(
-                        obj_type='organization_field',
-                        obj_id=field_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title,
-                        dc_placeholder=placeholder,
-                        dc_info=dc_info
-                    )
-                else:
-                    self._add_work_item(
-                        obj_type='organization_field',
-                        obj_id=field_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title
-                    )
-
-                count += 1
-
-                options = field.get('custom_field_options', [])
-                for opt in options:
-                    opt_id = opt.get('id')
-                    opt_name = opt.get('name', '')
-                    opt_raw = opt.get('raw_name', opt_name)
-                    opt_value = opt.get('value', '')
-
-                    dc_match = DC_PLACEHOLDER_PATTERN.search(str(opt_raw))
-
-                    if dc_match:
-                        placeholder = dc_match.group(0)
-                        dc_info = self._find_dc_by_placeholder(placeholder)
-
-                        self._add_work_item(
-                            obj_type='organization_field_option',
-                            obj_id=opt_id,
-                            field_name='name',
-                            current_value=opt_name,
-                            raw_value=opt_raw,
-                            dc_placeholder=placeholder,
-                            dc_info=dc_info,
-                            parent_id=field_id,
-                            extra={'option_value': opt_value}
-                        )
-                    else:
-                        self._add_work_item(
-                            obj_type='organization_field_option',
-                            obj_id=opt_id,
-                            field_name='name',
-                            current_value=opt_name,
-                            raw_value=opt_raw,
-                            parent_id=field_id,
-                            extra={'option_value': opt_value}
-                        )
-
-            log_signal.emit(f"  Found {count} organization fields")
-
-        except Exception as e:
-            log_signal.emit(f"  Error scanning organization fields: {e}")
-            logger.error(f"Error scanning organization fields: {e}")
-
+        count, _ = self._scan_fields_with_options(
+            log_signal, self.api.get_organization_fields,
+            'organization_field', 'organization_field_option',
+        )
+        log_signal.emit(f"  Found {count} organization fields")
         return count
 
     def _scan_groups(self, log_signal) -> int:
         """Scan groups."""
-        count = 0
-
-        try:
-            groups = self.api.get_groups()
-
-            for group in groups:
-                if self._should_stop():
-                    break
-
-                group_id = group.get('id')
-                name = group.get('name', '')
-
-                dc_match = DC_PLACEHOLDER_PATTERN.search(str(name))
-
-                if dc_match:
-                    placeholder = dc_match.group(0)
-                    dc_info = self._find_dc_by_placeholder(placeholder)
-
-                    self._add_work_item(
-                        obj_type='group',
-                        obj_id=group_id,
-                        field_name='name',
-                        current_value=name,
-                        raw_value=name,
-                        dc_placeholder=placeholder,
-                        dc_info=dc_info
-                    )
-                else:
-                    self._add_work_item(
-                        obj_type='group',
-                        obj_id=group_id,
-                        field_name='name',
-                        current_value=name,
-                        raw_value=name
-                    )
-
-                count += 1
-
-            log_signal.emit(f"  Found {count} groups")
-
-        except Exception as e:
-            log_signal.emit(f"  Error scanning groups: {e}")
-            logger.error(f"Error scanning groups: {e}")
-
+        count = self._scan_named_objects(
+            log_signal, self.api.get_groups, 'group', name_field='name',
+        )
+        log_signal.emit(f"  Found {count} groups")
         return count
 
     def _scan_macros(self, log_signal) -> int:
         """Scan macros."""
-        count = 0
-
-        try:
-            macros = self.api.get_macros()
-
-            for macro in macros:
-                if self._should_stop():
-                    break
-
-                macro_id = macro.get('id')
-                title = macro.get('title', '')
-                raw_title = macro.get('raw_title', title)
-
-                dc_match = DC_PLACEHOLDER_PATTERN.search(str(raw_title))
-
-                if dc_match:
-                    placeholder = dc_match.group(0)
-                    dc_info = self._find_dc_by_placeholder(placeholder)
-
-                    self._add_work_item(
-                        obj_type='macro',
-                        obj_id=macro_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title,
-                        dc_placeholder=placeholder,
-                        dc_info=dc_info
-                    )
-                else:
-                    self._add_work_item(
-                        obj_type='macro',
-                        obj_id=macro_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title
-                    )
-
-                count += 1
-
-            log_signal.emit(f"  Found {count} macros")
-
-        except Exception as e:
-            log_signal.emit(f"  Error scanning macros: {e}")
-            logger.error(f"Error scanning macros: {e}")
-
+        count = self._scan_named_objects(
+            log_signal, self.api.get_macros, 'macro',
+        )
+        log_signal.emit(f"  Found {count} macros")
         return count
 
     def _scan_triggers(self, log_signal) -> int:
         """Scan triggers."""
-        count = 0
-
-        try:
-            triggers = self.api.get_triggers()
-
-            for trigger in triggers:
-                if self._should_stop():
-                    break
-
-                trigger_id = trigger.get('id')
-                title = trigger.get('title', '')
-                raw_title = trigger.get('raw_title', title)
-
-                dc_match = DC_PLACEHOLDER_PATTERN.search(str(raw_title))
-
-                if dc_match:
-                    placeholder = dc_match.group(0)
-                    dc_info = self._find_dc_by_placeholder(placeholder)
-
-                    self._add_work_item(
-                        obj_type='trigger',
-                        obj_id=trigger_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title,
-                        dc_placeholder=placeholder,
-                        dc_info=dc_info
-                    )
-                else:
-                    self._add_work_item(
-                        obj_type='trigger',
-                        obj_id=trigger_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title
-                    )
-
-                count += 1
-
-            log_signal.emit(f"  Found {count} triggers")
-
-        except Exception as e:
-            log_signal.emit(f"  Error scanning triggers: {e}")
-            logger.error(f"Error scanning triggers: {e}")
-
+        count = self._scan_named_objects(
+            log_signal, self.api.get_triggers, 'trigger',
+        )
+        log_signal.emit(f"  Found {count} triggers")
         return count
 
     def _scan_automations(self, log_signal) -> int:
         """Scan automations."""
-        count = 0
-
-        try:
-            automations = self.api.get_automations()
-
-            for automation in automations:
-                if self._should_stop():
-                    break
-
-                automation_id = automation.get('id')
-                title = automation.get('title', '')
-                raw_title = automation.get('raw_title', title)
-
-                dc_match = DC_PLACEHOLDER_PATTERN.search(str(raw_title))
-
-                if dc_match:
-                    placeholder = dc_match.group(0)
-                    dc_info = self._find_dc_by_placeholder(placeholder)
-
-                    self._add_work_item(
-                        obj_type='automation',
-                        obj_id=automation_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title,
-                        dc_placeholder=placeholder,
-                        dc_info=dc_info
-                    )
-                else:
-                    self._add_work_item(
-                        obj_type='automation',
-                        obj_id=automation_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title
-                    )
-
-                count += 1
-
-            log_signal.emit(f"  Found {count} automations")
-
-        except Exception as e:
-            log_signal.emit(f"  Error scanning automations: {e}")
-            logger.error(f"Error scanning automations: {e}")
-
+        count = self._scan_named_objects(
+            log_signal, self.api.get_automations, 'automation',
+        )
+        log_signal.emit(f"  Found {count} automations")
         return count
 
     def _scan_views(self, log_signal) -> int:
         """Scan views."""
-        count = 0
-
-        try:
-            views = self.api.get_views()
-
-            for view in views:
-                if self._should_stop():
-                    break
-
-                view_id = view.get('id')
-                title = view.get('title', '')
-                raw_title = view.get('raw_title', title)
-
-                dc_match = DC_PLACEHOLDER_PATTERN.search(str(raw_title))
-
-                if dc_match:
-                    placeholder = dc_match.group(0)
-                    dc_info = self._find_dc_by_placeholder(placeholder)
-
-                    self._add_work_item(
-                        obj_type='view',
-                        obj_id=view_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title,
-                        dc_placeholder=placeholder,
-                        dc_info=dc_info
-                    )
-                else:
-                    self._add_work_item(
-                        obj_type='view',
-                        obj_id=view_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=raw_title
-                    )
-
-                count += 1
-
-            log_signal.emit(f"  Found {count} views")
-
-        except Exception as e:
-            log_signal.emit(f"  Error scanning views: {e}")
-            logger.error(f"Error scanning views: {e}")
-
+        count = self._scan_named_objects(
+            log_signal, self.api.get_views, 'view',
+        )
+        log_signal.emit(f"  Found {count} views")
         return count
 
     def _scan_sla_policies(self, log_signal) -> int:
         """Scan SLA policies."""
-        count = 0
-
-        try:
-            policies = self.api.get_sla_policies()
-
-            for policy in policies:
-                if self._should_stop():
-                    break
-
-                policy_id = policy.get('id')
-                title = policy.get('title', '')
-
-                dc_match = DC_PLACEHOLDER_PATTERN.search(str(title))
-
-                if dc_match:
-                    placeholder = dc_match.group(0)
-                    dc_info = self._find_dc_by_placeholder(placeholder)
-
-                    self._add_work_item(
-                        obj_type='sla_policy',
-                        obj_id=policy_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=title,
-                        dc_placeholder=placeholder,
-                        dc_info=dc_info
-                    )
-                else:
-                    self._add_work_item(
-                        obj_type='sla_policy',
-                        obj_id=policy_id,
-                        field_name='title',
-                        current_value=title,
-                        raw_value=title
-                    )
-
-                count += 1
-
-            log_signal.emit(f"  Found {count} SLA policies")
-
-        except Exception as e:
-            log_signal.emit(f"  Error scanning SLA policies: {e}")
-            logger.error(f"Error scanning SLA policies: {e}")
-
+        count = self._scan_named_objects(
+            log_signal, self.api.get_sla_policies, 'sla_policy',
+        )
+        log_signal.emit(f"  Found {count} SLA policies")
         return count
 
     def _scan_hc_categories(self, log_signal) -> int:
         """Scan Help Center categories."""
-        count = 0
-
-        try:
-            categories = self.api.get_hc_categories()
-
-            for cat in categories:
-                if self._should_stop():
-                    break
-
-                cat_id = cat.get('id')
-                name = cat.get('name', '')
-
-                self._add_work_item(
-                    obj_type='category',
-                    obj_id=cat_id,
-                    field_name='name',
-                    current_value=name,
-                    raw_value=name
-                )
-
-                count += 1
-
-            log_signal.emit(f"  Found {count} HC categories")
-
-        except Exception as e:
-            log_signal.emit(f"  Error scanning HC categories: {e}")
-            logger.error(f"Error scanning HC categories: {e}")
-
+        count = self._scan_named_objects(
+            log_signal, self.api.get_hc_categories, 'category',
+            name_field='name',
+        )
+        log_signal.emit(f"  Found {count} HC categories")
         return count
 
     def _scan_hc_sections(self, log_signal) -> int:
         """Scan Help Center sections."""
-        count = 0
-
-        try:
-            sections = self.api.get_hc_sections()
-
-            for sect in sections:
-                if self._should_stop():
-                    break
-
-                sect_id = sect.get('id')
-                name = sect.get('name', '')
-
-                self._add_work_item(
-                    obj_type='section',
-                    obj_id=sect_id,
-                    field_name='name',
-                    current_value=name,
-                    raw_value=name
-                )
-
-                count += 1
-
-            log_signal.emit(f"  Found {count} HC sections")
-
-        except Exception as e:
-            log_signal.emit(f"  Error scanning HC sections: {e}")
-            logger.error(f"Error scanning HC sections: {e}")
-
+        count = self._scan_named_objects(
+            log_signal, self.api.get_hc_sections, 'section',
+            name_field='name',
+        )
+        log_signal.emit(f"  Found {count} HC sections")
         return count
 
     def _scan_hc_articles(self, log_signal) -> int:
         """Scan Help Center articles."""
-        count = 0
-
-        try:
-            articles = self.api.get_hc_articles()
-
-            for art in articles:
-                if self._should_stop():
-                    break
-
-                art_id = art.get('id')
-                title = art.get('title', '')
-
-                self._add_work_item(
-                    obj_type='article',
-                    obj_id=art_id,
-                    field_name='title',
-                    current_value=title,
-                    raw_value=title
-                )
-
-                count += 1
-
-            log_signal.emit(f"  Found {count} HC articles")
-
-        except Exception as e:
-            log_signal.emit(f"  Error scanning HC articles: {e}")
-            logger.error(f"Error scanning HC articles: {e}")
-
+        count = self._scan_named_objects(
+            log_signal, self.api.get_hc_articles, 'article',
+        )
+        log_signal.emit(f"  Found {count} HC articles")
         return count
 
     def _add_work_item(
@@ -1390,12 +938,15 @@ class ZendeskController:
             dc_placeholder = dc_info.get('placeholder', dc_placeholder)
 
             variants = dc_info.get('variants', {})
-            if 16 in variants:
-                pt_text = variants[16].get('content', current_value)
-            if 1 in variants:
-                en_text = variants[1].get('content', '')
-            if 2 in variants:
-                es_text = variants[2].get('content', '')
+            # Try correct pt-BR locale (1176) first; fall back to 16 for DCs
+            # created before the locale ID bug was fixed (16 = French, not PT).
+            pt_variant = variants.get(self.pt_locale_id) or variants.get(16)
+            if pt_variant:
+                pt_text = pt_variant.get('content', current_value)
+            if self.en_locale_id in variants:
+                en_text = variants[self.en_locale_id].get('content', '')
+            if self.es_locale_id in variants:
+                es_text = variants[self.es_locale_id].get('content', '')
 
         elif raw_is_dc:
             # Field is linked to DC but we couldn't find it in our cache
@@ -1426,14 +977,26 @@ class ZendeskController:
                 already_linked = False
 
                 variants = existing_dc.get('variants', {})
-                if 16 in variants:
-                    pt_text = variants[16].get('content', current_value)
-                if 1 in variants:
-                    en_text = variants[1].get('content', '')
-                if 2 in variants:
-                    es_text = variants[2].get('content', '')
+                pt_variant = variants.get(self.pt_locale_id) or variants.get(16)
+                if pt_variant:
+                    pt_text = pt_variant.get('content', current_value)
+                if self.en_locale_id in variants:
+                    en_text = variants[self.en_locale_id].get('content', '')
+                if self.es_locale_id in variants:
+                    es_text = variants[self.es_locale_id].get('content', '')
             else:
-                dc_placeholder = generate_dc_placeholder(current_value)
+                # For field options, use parent-prefixed DC name so the
+                # preview shows the same placeholder that will be created.
+                if '_option' in obj_type:
+                    parent_name = (extra or {}).get('parent_name', '')
+                    parent_dc = generate_dc_name(parent_name) if parent_name else ''
+                    option_dc = generate_dc_name(current_value)
+                    if parent_dc and option_dc:
+                        dc_placeholder = f"{{{{dc.{parent_dc}_{option_dc}}}}}"
+                    else:
+                        dc_placeholder = generate_dc_placeholder(current_value)
+                else:
+                    dc_placeholder = generate_dc_placeholder(current_value)
 
         context = CONTEXT_MAP.get(obj_type, 'Other')
         type_name = TYPE_DISPLAY_MAP.get(
@@ -1475,161 +1038,29 @@ class ZendeskController:
         if 0 <= index < len(self.work_items):
             self.work_items[index].update(updates)
 
-    def perform_translation(
+    # =========================================================================
+    # TRANSLATION
+    # =========================================================================
+
+    def _translate_items_list(
         self,
-        progress_signal,
         log_signal,
-        force: bool = False
-    ) -> TranslationStats:
-        """Perform translation for all work items."""
-        self._reset_stop()
-
-        if not self.translator:
-            self.translator = TranslationService()
-
-        stats = TranslationStats()
-        total = len(self.work_items)
-        stats.total = total
-
-        log_signal.emit(f"Starting translation of {total} items...")
-
-        for i, item in enumerate(self.work_items):
-            if self._should_stop():
-                log_signal.emit("Translation canceled by user")
-                raise Exception("Canceled by user")
-
-            progress_signal.emit(
-                i + 1, total, f"Translating {i + 1}/{total}..."
-            )
-
-            if item.get('is_system') or item.get('is_reserved'):
-                continue
-
-            pt_text = item.get('pt', '')
-
-            if not pt_text:
-                continue
-
-            en_source = item.get('en_source', SOURCE_NEW)
-            es_source = item.get('es_source', SOURCE_NEW)
-
-            needs_en = force or en_source == SOURCE_NEW or not item.get('en')
-            needs_es = force or es_source == SOURCE_NEW or not item.get('es')
-
-            if not needs_en and not needs_es:
-                continue
-
-            try:
-                if needs_en:
-                    en_result, en_from_cache = self.translator.translate(
-                        pt_text, 'pt', 'en'
-                    )
-                    if en_result:
-                        item['en'] = en_result
-                        item['en_source'] = (
-                            SOURCE_CACHE if en_from_cache else SOURCE_TRANSLATED
-                        )
-                        if en_from_cache:
-                            stats.from_cache += 1
-                        else:
-                            stats.translated += 1
-                    else:
-                        item['en_source'] = SOURCE_FAILED
-                        stats.failed += 1
-
-                if needs_es:
-                    es_result, es_from_cache = self.translator.translate(
-                        pt_text, 'pt', 'es'
-                    )
-                    if es_result:
-                        item['es'] = es_result
-                        item['es_source'] = (
-                            SOURCE_CACHE if es_from_cache else SOURCE_TRANSLATED
-                        )
-                        if es_from_cache:
-                            stats.from_cache += 1
-                        else:
-                            stats.translated += 1
-                    else:
-                        item['es_source'] = SOURCE_FAILED
-                        stats.failed += 1
-
-            except Exception as e:
-                logger.error(f"Translation error for item {i}: {e}")
-                item['en_source'] = SOURCE_FAILED
-                item['es_source'] = SOURCE_FAILED
-                stats.failed += 1
-
-        log_signal.emit(
-            f"Translation complete: {stats.translated} translated, "
-            f"{stats.from_cache} from cache, {stats.failed} failed"
-        )
-
-        return stats
-
-    def perform_translation_for_indices(
-        self,
         progress_signal,
-        log_signal,
-        selected_indices: List[int],
-        force_retranslate: bool = False
+        items_to_translate: List[Tuple[int, Dict]],
+        force_retranslate: bool = False,
     ) -> TranslationStats:
-        """Translate only the items at the specified indices."""
-        self._reset_stop()
-
-        if not self.translator:
-            self.translator = TranslationService()
-
+        """Translate a list of (index, item) pairs. Updates work_items in-place."""
         stats = TranslationStats()
-
-        items_to_consider = []
-        for idx in selected_indices:
-            if idx < len(self.work_items):
-                item = self.work_items[idx]
-                if (not item.get('is_system', False) and
-                        not item.get('is_reserved', False)):
-                    items_to_consider.append((idx, item))
-
-        system_skipped = len(selected_indices) - len(items_to_consider)
-        if system_skipped > 0:
-            log_signal.emit(f"Skipping {system_skipped} system/reserved items")
-
-        if force_retranslate:
-            to_translate = items_to_consider
-            log_signal.emit(
-                f"[RE-TRANSLATE] Processing {len(to_translate)} selected items"
-            )
-        else:
-            to_translate = []
-            for idx, item in items_to_consider:
-                en_text = item.get('en', '')
-                es_text = item.get('es', '')
-                en_source = item.get('en_source', SOURCE_NEW)
-                es_source = item.get('es_source', SOURCE_NEW)
-
-                needs_en = not en_text or en_source == SOURCE_NEW
-                needs_es = not es_text or es_source == SOURCE_NEW
-
-                if needs_en or needs_es:
-                    to_translate.append((idx, item))
-
-            already_done = len(items_to_consider) - len(to_translate)
-            if already_done > 0:
-                log_signal.emit(
-                    f"Skipping {already_done} items that already have "
-                    f"translations"
-                )
-
-        total = len(to_translate)
+        total = len(items_to_translate)
         stats.total = total
-
-        log_signal.emit(f"Translating {total} items...")
 
         if total == 0:
             log_signal.emit("No items need translation.")
             return stats
 
-        for i, (idx, item) in enumerate(to_translate):
+        log_signal.emit(f"Translating {total} items...")
+
+        for i, (idx, item) in enumerate(items_to_translate):
             if self._should_stop():
                 log_signal.emit("Translation canceled by user")
                 raise Exception("Canceled by user")
@@ -1639,19 +1070,19 @@ class ZendeskController:
             )
 
             pt_text = item.get('pt', '')
-
             if not pt_text:
                 continue
 
             en_source = item.get('en_source', SOURCE_NEW)
             es_source = item.get('es_source', SOURCE_NEW)
-
-            if force_retranslate:
-                needs_en = True
-                needs_es = True
-            else:
-                needs_en = en_source == SOURCE_NEW or not item.get('en')
-                needs_es = es_source == SOURCE_NEW or not item.get('es')
+            needs_en = (
+                force_retranslate or en_source == SOURCE_NEW
+                or not item.get('en')
+            )
+            needs_es = (
+                force_retranslate or es_source == SOURCE_NEW
+                or not item.get('es')
+            )
 
             if not needs_en and not needs_es:
                 continue
@@ -1664,7 +1095,8 @@ class ZendeskController:
                     if en_result:
                         self.work_items[idx]['en'] = en_result
                         self.work_items[idx]['en_source'] = (
-                            SOURCE_CACHE if en_from_cache else SOURCE_TRANSLATED
+                            SOURCE_CACHE if en_from_cache
+                            else SOURCE_TRANSLATED
                         )
                         if en_from_cache:
                             stats.from_cache += 1
@@ -1681,7 +1113,8 @@ class ZendeskController:
                     if es_result:
                         self.work_items[idx]['es'] = es_result
                         self.work_items[idx]['es_source'] = (
-                            SOURCE_CACHE if es_from_cache else SOURCE_TRANSLATED
+                            SOURCE_CACHE if es_from_cache
+                            else SOURCE_TRANSLATED
                         )
                         if es_from_cache:
                             stats.from_cache += 1
@@ -1701,8 +1134,88 @@ class ZendeskController:
             f"Translation complete: {stats.translated} translated, "
             f"{stats.from_cache} from cache, {stats.failed} failed"
         )
-
         return stats
+
+    def perform_translation(
+        self,
+        progress_signal,
+        log_signal,
+        force: bool = False
+    ) -> TranslationStats:
+        """Perform translation for all work items."""
+        self._reset_stop()
+
+        if not self.translator:
+            self.translator = TranslationService()
+
+        total = len(self.work_items)
+        log_signal.emit(f"Starting translation of {total} items...")
+
+        items_to_translate = [
+            (i, item) for i, item in enumerate(self.work_items)
+            if not item.get('is_system') and not item.get('is_reserved')
+            and item.get('pt')
+            and (
+                force
+                or item.get('en_source') == SOURCE_NEW or not item.get('en')
+                or item.get('es_source') == SOURCE_NEW or not item.get('es')
+            )
+        ]
+
+        stats = self._translate_items_list(
+            log_signal, progress_signal, items_to_translate,
+            force_retranslate=force,
+        )
+        stats.total = total
+        return stats
+
+    def perform_translation_for_indices(
+        self,
+        progress_signal,
+        log_signal,
+        selected_indices: List[int],
+        force_retranslate: bool = False
+    ) -> TranslationStats:
+        """Translate only the items at the specified indices."""
+        self._reset_stop()
+
+        if not self.translator:
+            self.translator = TranslationService()
+
+        items_to_consider = [
+            (idx, self.work_items[idx])
+            for idx in selected_indices
+            if idx < len(self.work_items)
+            and not self.work_items[idx].get('is_system', False)
+            and not self.work_items[idx].get('is_reserved', False)
+        ]
+
+        system_skipped = len(selected_indices) - len(items_to_consider)
+        if system_skipped > 0:
+            log_signal.emit(f"Skipping {system_skipped} system/reserved items")
+
+        if force_retranslate:
+            to_translate = items_to_consider
+            log_signal.emit(
+                f"[RE-TRANSLATE] Processing {len(to_translate)} selected items"
+            )
+        else:
+            to_translate = [
+                (idx, item) for idx, item in items_to_consider
+                if (not item.get('en') or item.get('en_source') == SOURCE_NEW)
+                or (not item.get('es') or item.get('es_source') == SOURCE_NEW)
+            ]
+            already_done = len(items_to_consider) - len(to_translate)
+            if already_done > 0:
+                log_signal.emit(
+                    f"Skipping {already_done} items that already have "
+                    f"translations"
+                )
+
+        return self._translate_items_list(
+            log_signal, progress_signal, to_translate,
+            force_retranslate=force_retranslate,
+        )
 
     def execute_changes(
         self,
@@ -1732,27 +1245,33 @@ class ZendeskController:
         total = len(sorted_items)
         log_signal.emit(f"Applying {total} changes to Zendesk...")
 
-        for i, item in enumerate(sorted_items):
-            if self._should_stop():
-                log_signal.emit("Apply canceled by user")
-                raise Exception("Canceled by user")
+        self._deferred_option_updates = {}
+        try:
+            for i, item in enumerate(sorted_items):
+                if self._should_stop():
+                    log_signal.emit("Apply canceled by user")
+                    raise Exception("Canceled by user")
 
-            progress_signal.emit(i + 1, total, f"Applying {i + 1}/{total}...")
+                progress_signal.emit(i + 1, total, f"Applying {i + 1}/{total}...")
 
-            try:
-                success, skipped, msg = self._apply_single_item(
-                    item, log_signal
-                )
-                if skipped:
-                    result['skipped'].append(item)
-                elif success:
-                    result['success'].append(item)
-                else:
+                try:
+                    success, skipped, msg = self._apply_single_item(
+                        item, log_signal
+                    )
+                    if skipped:
+                        result['skipped'].append(item)
+                    elif success:
+                        result['success'].append(item)
+                    else:
+                        result['failed'].append(item)
+                except Exception as e:
+                    logger.error(f"Failed to apply item: {e}")
                     result['failed'].append(item)
-            except Exception as e:
-                logger.error(f"Failed to apply item: {e}")
-                result['failed'].append(item)
-                log_signal.emit(f"    Error: {e}")
+                    log_signal.emit(f"    Error: {e}")
+
+            self._flush_deferred_option_updates(log_signal, result)
+        finally:
+            self._deferred_option_updates = None
 
         skipped_count = len(result['skipped'])
         if skipped_count > 0:
@@ -1764,6 +1283,34 @@ class ZendeskController:
         )
 
         return result
+
+    def _flush_deferred_option_updates(
+        self,
+        log_signal,
+        result: Dict[str, Any]
+    ) -> None:
+        """Batch-apply all queued field option updates (one GET+PUT per field)."""
+        if not self._deferred_option_updates:
+            return
+        for (field_type, parent_id), updates in self._deferred_option_updates.items():
+            if self._should_stop():
+                break
+            try:
+                log_signal.emit(
+                    f"  Batch updating {len(updates)} options "
+                    f"for {field_type} {parent_id}..."
+                )
+                if field_type == 'ticket_field':
+                    self.api.batch_update_ticket_field_options(parent_id, updates)
+                elif field_type == 'user_field':
+                    self.api.batch_update_user_field_options(parent_id, updates)
+                elif field_type == 'organization_field':
+                    self.api.batch_update_organization_field_options(parent_id, updates)
+            except Exception as e:
+                logger.error(f"Batch option update failed for {field_type} {parent_id}: {e}")
+                log_signal.emit(
+                    f"  Error batching options for {field_type} {parent_id}: {e}"
+                )
 
     def _refresh_dc_cache(self):
         """Refresh the DC cache from Zendesk."""
@@ -1777,7 +1324,11 @@ class ZendeskController:
         self,
         items: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Sort items for optimal apply order."""
+        """Sort items for optimal apply order.
+
+        already_linked items are skipped first, then parent fields are created
+        before their child options to avoid ordering issues.
+        """
         already_linked = []
         options = []
         parents = []
@@ -1790,7 +1341,7 @@ class ZendeskController:
             else:
                 parents.append(item)
 
-        return already_linked + options + parents
+        return already_linked + parents + options
 
     def _apply_single_item(
         self,
@@ -1826,14 +1377,20 @@ class ZendeskController:
                 dc_id = item.get('dc_id')
 
                 if dc_id and force_update:
-                    self.api.update_dynamic_content_variants(
+                    ok = self.api.update_dynamic_content_variants(
                         dc_id,
                         [
-                            {'locale_id': 16, 'content': pt_text},
-                            {'locale_id': 1, 'content': en_text},
-                            {'locale_id': 2, 'content': es_text},
-                        ]
+                            {'locale_id': self.pt_locale_id, 'content': pt_text},
+                            {'locale_id': self.en_locale_id, 'content': en_text},
+                            {'locale_id': self.es_locale_id, 'content': es_text},
+                        ],
+                        default_locale_id=self.pt_locale_id,
                     )
+                    if not ok:
+                        log_signal.emit(
+                            f"    Warning: pt-BR variant not found on DC {dc_id}; "
+                            "could not set as default"
+                        )
                     log_signal.emit("    Updated DC translations")
                     return True, False, "Updated DC"
                 else:
@@ -1841,13 +1398,26 @@ class ZendeskController:
                     return True, True, "Already linked"
 
             # Not linked yet - need to create or find DC
-            safe_dc_name = generate_dc_name(current_value)
+            # For field options, prefix with the parent field name so the DC
+            # name is unique and self-documenting: {field}_{option}
+            if '_option' in obj_type:
+                parent_name = item.get('parent_name', '')
+                parent_dc = generate_dc_name(parent_name) if parent_name else ''
+                option_dc = generate_dc_name(current_value)
+                safe_dc_name = (
+                    f"{parent_dc}_{option_dc}"
+                    if parent_dc and option_dc
+                    else option_dc
+                )
+            else:
+                safe_dc_name = generate_dc_name(current_value)
+
             if not safe_dc_name:
                 log_signal.emit("    Cannot generate DC name (skipped)")
                 return False, True, "Cannot generate DC name"
 
             # Check if DC with this name already exists
-            existing_dc = self._find_dc_by_name(current_value)
+            existing_dc = self._find_dc_by_name(safe_dc_name)
 
             placeholder = None
             dc_id = None
@@ -1857,29 +1427,35 @@ class ZendeskController:
                 placeholder = existing_dc.get('placeholder')
 
                 if force_update:
-                    self.api.update_dynamic_content_variants(
+                    ok = self.api.update_dynamic_content_variants(
                         dc_id,
                         [
-                            {'locale_id': 16, 'content': pt_text},
-                            {'locale_id': 1, 'content': en_text},
-                            {'locale_id': 2, 'content': es_text},
-                        ]
+                            {'locale_id': self.pt_locale_id, 'content': pt_text},
+                            {'locale_id': self.en_locale_id, 'content': en_text},
+                            {'locale_id': self.es_locale_id, 'content': es_text},
+                        ],
+                        default_locale_id=self.pt_locale_id,
                     )
+                    if not ok:
+                        log_signal.emit(
+                            f"    Warning: pt-BR variant not found on DC {dc_id}; "
+                            "could not set as default"
+                        )
                     log_signal.emit(f"    Updated existing DC: {placeholder}")
             else:
                 # Create new DC
                 try:
                     dc_item = self.api.create_dynamic_content(
                         name=safe_dc_name,
-                        default_locale_id=16,
+                        default_locale_id=self.pt_locale_id,
                         variants=[
                             {
-                                'locale_id': 16,
+                                'locale_id': self.pt_locale_id,
                                 'content': pt_text,
                                 'default': True
                             },
-                            {'locale_id': 1, 'content': en_text},
-                            {'locale_id': 2, 'content': es_text},
+                            {'locale_id': self.en_locale_id, 'content': en_text},
+                            {'locale_id': self.es_locale_id, 'content': es_text},
                         ]
                     )
 
@@ -1964,23 +1540,25 @@ class ZendeskController:
             elif obj_type == 'ticket_field_option':
                 if not parent_id:
                     raise Exception("No parent_id for ticket_field_option")
-
                 if not option_value:
                     raise Exception("No option_value for ticket_field_option")
-
-                # Use field-based update (more reliable)
-                log_signal.emit(
-                    f"    Updating via field, value='{option_value}'"
-                )
-                self.api.update_ticket_field_option_via_field(
-                    parent_id, option_value, placeholder
-                )
+                if self._deferred_option_updates is not None:
+                    key = ('ticket_field', parent_id)
+                    self._deferred_option_updates.setdefault(key, {})[option_value] = placeholder
+                    log_signal.emit(f"    Queued for batch update (field {parent_id})")
+                else:
+                    log_signal.emit(f"    Updating via field, value='{option_value}'")
+                    self.api.update_ticket_field_option_via_field(
+                        parent_id, option_value, placeholder
+                    )
 
             elif obj_type == 'ticket_form':
                 self.api.update_ticket_form(obj_id, {field_name: placeholder})
 
             elif obj_type == 'custom_status':
-                self.api.update_custom_status(obj_id, {field_name: placeholder})
+                self.api.update_custom_status(
+                    obj_id, {field_name: placeholder}
+                )
 
             elif obj_type == 'user_field':
                 self.api.update_user_field(obj_id, {field_name: placeholder})
@@ -1988,13 +1566,16 @@ class ZendeskController:
             elif obj_type == 'user_field_option':
                 if not parent_id:
                     raise Exception("No parent_id for user_field_option")
-
                 if not option_value:
                     raise Exception("No option_value for user_field_option")
-
-                self.api.update_user_field_option_via_field(
-                    parent_id, option_value, placeholder
-                )
+                if self._deferred_option_updates is not None:
+                    key = ('user_field', parent_id)
+                    self._deferred_option_updates.setdefault(key, {})[option_value] = placeholder
+                    log_signal.emit(f"    Queued for batch update (field {parent_id})")
+                else:
+                    self.api.update_user_field_option_via_field(
+                        parent_id, option_value, placeholder
+                    )
 
             elif obj_type == 'organization_field':
                 self.api.update_organization_field(
@@ -2003,18 +1584,17 @@ class ZendeskController:
 
             elif obj_type == 'organization_field_option':
                 if not parent_id:
-                    raise Exception(
-                        "No parent_id for organization_field_option"
-                    )
-
+                    raise Exception("No parent_id for organization_field_option")
                 if not option_value:
-                    raise Exception(
-                        "No option_value for organization_field_option"
+                    raise Exception("No option_value for organization_field_option")
+                if self._deferred_option_updates is not None:
+                    key = ('organization_field', parent_id)
+                    self._deferred_option_updates.setdefault(key, {})[option_value] = placeholder
+                    log_signal.emit(f"    Queued for batch update (field {parent_id})")
+                else:
+                    self.api.update_organization_field_option_via_field(
+                        parent_id, option_value, placeholder
                     )
-
-                self.api.update_organization_field_option_via_field(
-                    parent_id, option_value, placeholder
-                )
 
             elif obj_type == 'group':
                 self.api.update_group(obj_id, {field_name: placeholder})
@@ -2183,5 +1763,3 @@ class ZendeskController:
     def cleanup(self):
         """Cleanup resources."""
         self.stop()
-        if self.translator:
-            self.translator.save_cache()

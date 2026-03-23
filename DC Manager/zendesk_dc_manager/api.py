@@ -65,9 +65,9 @@ class ZendeskAPI:
         self,
         method: str,
         url: str,
-        data: Dict = None,
-        params: Dict = None,
-        retries: int = None,
+        data: Optional[Dict] = None,
+        params: Optional[Dict] = None,
+        retries: Optional[int] = None,
         retry_on_404: bool = True
     ) -> requests.Response:
         """Make an API request with retry logic."""
@@ -151,7 +151,7 @@ class ZendeskAPI:
         self,
         url: str,
         key: str,
-        params: Dict = None,
+        params: Optional[Dict] = None,
         retry_on_404: bool = True
     ) -> List[Dict]:
         """Paginate through API results."""
@@ -173,7 +173,7 @@ class ZendeskAPI:
             elif isinstance(data, list):
                 results.extend(data)
 
-            url = data.get('next_page')
+            url = (data.get('next_page') or '') if isinstance(data, dict) else ''
             params = {}
             page_count += 1
 
@@ -194,6 +194,12 @@ class ZendeskAPI:
         url = f"{self.base_url}/locales/default"
         response = self._request('GET', url)
         return response.json().get('locale', {})
+
+    def get_locales(self) -> List[Dict]:
+        """Get all locales available for this account."""
+        url = f"{self.base_url}/locales"
+        response = self._request('GET', url)
+        return response.json().get('locales', [])
 
     # =========================================================================
     # DYNAMIC CONTENT
@@ -228,15 +234,46 @@ class ZendeskAPI:
         response = self._request('POST', url, data=data)
         return response.json().get('item', {})
 
+    def set_variant_as_default(self, dc_id: int, locale_id: int) -> bool:
+        """Set a specific locale variant as the default for a DC item.
+
+        The default_locale_id on a DC item cannot be changed after creation,
+        but the variant's 'default' flag can be updated individually.
+        Returns True if the variant was found and updated, False otherwise.
+        """
+        dc_item = self.get_dynamic_content_item(dc_id)
+        for variant in dc_item.get('variants', []):
+            if variant.get('locale_id') == locale_id:
+                variant_id = variant['id']
+                url = (
+                    f"{self.base_url}/dynamic_content/items/{dc_id}"
+                    f"/variants/{variant_id}"
+                )
+                self._request('PUT', url, data={
+                    'variant': {'default': True}
+                })
+                return True
+        return False
+
     def update_dynamic_content_variants(
         self,
         dc_id: int,
-        variants: List[Dict]
-    ) -> Dict[str, Any]:
-        """Update variants of a dynamic content item."""
+        variants: List[Dict],
+        default_locale_id: Optional[int] = None
+    ) -> bool:
+        """Update variants of a dynamic content item.
+
+        If default_locale_id is provided, also sets that variant as the default.
+        Returns True on success. Returns False if default_locale_id was requested
+        but the variant was not found.
+        """
         dc_item = self.get_dynamic_content_item(dc_id)
         existing_variants = {
             v['locale_id']: v for v in dc_item.get('variants', [])
+        }
+        # Track all variant IDs including ones we are about to create via POST
+        variant_ids: Dict[int, int] = {
+            v['locale_id']: v['id'] for v in dc_item.get('variants', [])
         }
 
         for variant in variants:
@@ -249,19 +286,27 @@ class ZendeskAPI:
                     f"{self.base_url}/dynamic_content/items/{dc_id}"
                     f"/variants/{variant_id}"
                 )
-                self._request('PUT', url, data={
-                    'variant': {'content': content}
-                })
+                self._request('PUT', url, data={'variant': {'content': content}})
             else:
                 url = f"{self.base_url}/dynamic_content/items/{dc_id}/variants"
-                self._request('POST', url, data={
-                    'variant': {
-                        'locale_id': locale_id,
-                        'content': content
-                    }
+                response = self._request('POST', url, data={
+                    'variant': {'locale_id': locale_id, 'content': content}
                 })
+                new_variant = response.json().get('variant', {})
+                if new_variant.get('id'):
+                    variant_ids[locale_id] = new_variant['id']
 
-        return self.get_dynamic_content_item(dc_id)
+        if default_locale_id is not None:
+            if default_locale_id in variant_ids:
+                variant_id = variant_ids[default_locale_id]
+                url = (
+                    f"{self.base_url}/dynamic_content/items/{dc_id}"
+                    f"/variants/{variant_id}"
+                )
+                self._request('PUT', url, data={'variant': {'default': True}})
+                return True
+            return False
+        return True
 
     # =========================================================================
     # TICKET FIELDS
@@ -355,6 +400,30 @@ class ZendeskAPI:
             'custom_field_option': data
         })
         return response.json().get('custom_field_option', {})
+
+    def batch_update_ticket_field_options(
+        self,
+        field_id: int,
+        updates: Dict[str, str]
+    ) -> None:
+        """Update multiple ticket field options in a single GET+PUT.
+
+        updates: {option_value: new_name}
+        More efficient than calling update_ticket_field_option_via_field
+        once per option when updating many options on the same field.
+        """
+        field = self.get_ticket_field(field_id)
+        options = field.get('custom_field_options', [])
+        if not options:
+            raise Exception(f"Ticket field {field_id} has no options")
+        updated = [
+            {
+                'name': updates.get(opt.get('value'), opt.get('raw_name', opt.get('name', ''))),
+                'value': opt.get('value'),
+            }
+            for opt in options
+        ]
+        self.update_ticket_field(field_id, {'custom_field_options': updated})
 
     # =========================================================================
     # TICKET FORMS
@@ -477,6 +546,25 @@ class ZendeskAPI:
         })
         return response.json().get('custom_field_option', {})
 
+    def batch_update_user_field_options(
+        self,
+        field_id: int,
+        updates: Dict[str, str]
+    ) -> None:
+        """Update multiple user field options in a single GET+PUT."""
+        field = self.get_user_field(field_id)
+        options = field.get('custom_field_options', [])
+        if not options:
+            raise Exception(f"User field {field_id} has no options")
+        updated = [
+            {
+                'name': updates.get(opt.get('value'), opt.get('raw_name', opt.get('name', ''))),
+                'value': opt.get('value'),
+            }
+            for opt in options
+        ]
+        self.update_user_field(field_id, {'custom_field_options': updated})
+
     # =========================================================================
     # ORGANIZATION FIELDS
     # =========================================================================
@@ -561,6 +649,25 @@ class ZendeskAPI:
             'custom_field_option': data
         })
         return response.json().get('custom_field_option', {})
+
+    def batch_update_organization_field_options(
+        self,
+        field_id: int,
+        updates: Dict[str, str]
+    ) -> None:
+        """Update multiple organization field options in a single GET+PUT."""
+        field = self.get_organization_field(field_id)
+        options = field.get('custom_field_options', [])
+        if not options:
+            raise Exception(f"Organization field {field_id} has no options")
+        updated = [
+            {
+                'name': updates.get(opt.get('value'), opt.get('raw_name', opt.get('name', ''))),
+                'value': opt.get('value'),
+            }
+            for opt in options
+        ]
+        self.update_organization_field(field_id, {'custom_field_options': updated})
 
     # =========================================================================
     # GROUPS

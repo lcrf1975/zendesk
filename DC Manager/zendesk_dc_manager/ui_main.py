@@ -17,7 +17,6 @@ from PyQt6.QtWidgets import (
 from zendesk_dc_manager.config import (
     UI_CONFIG,
     CREDENTIALS_FILE,
-    logger,
     SOURCE_NEW,
     SOURCE_ZENDESK_DC,
     SOURCE_TRANSLATED,
@@ -31,7 +30,7 @@ from zendesk_dc_manager.config import (
     PLACEHOLDER_COLORS,
     PLACEHOLDER_TEXT_COLORS,
 )
-from zendesk_dc_manager.types import AppState, StateManager
+from zendesk_dc_manager.types import AppState, StateManager, TranslationStats
 from zendesk_dc_manager.controller import ZendeskController
 from zendesk_dc_manager.ui_styles import get_main_stylesheet
 from zendesk_dc_manager.ui_widgets import (
@@ -200,7 +199,7 @@ class CompactWizardPage(QWidget):
         header.addWidget(title_label)
 
         if subtitle:
-            subtitle_label = QLabel(f"— {subtitle}")
+            subtitle_label = QLabel(f"- {subtitle}")
             subtitle_label.setStyleSheet(
                 "font-size: 13px; color: #6B7280;"
             )
@@ -1361,8 +1360,8 @@ class ZendeskWizard(QMainWindow):
 
         with self._worker_lock:
             self.worker = StepWorker(
-                lambda p, l: self.controller.connect(
-                    subdomain, email, token, backup, l
+                lambda p, log: self.controller.connect(
+                    subdomain, email, token, backup, log
                 )
             )
             self.worker.progress.connect(
@@ -1424,7 +1423,7 @@ class ZendeskWizard(QMainWindow):
 
         with self._worker_lock:
             self.worker = StepWorker(
-                lambda p, l: self.controller.scan_and_analyze(p, l, config)
+                lambda p, log: self.controller.scan_and_analyze(p, log, config)
             )
             self.worker.progress.connect(
                 lambda c, t, m: self.status_bar.show_progress(
@@ -1450,7 +1449,7 @@ class ZendeskWizard(QMainWindow):
         self._update_sidebar_state()
 
         self.status_bar.finish("Scan Complete", True)
-        stats = result
+        stats: Dict[str, int] = result  # type: ignore[assignment]
         self._work_items_cache = self.controller.work_items
 
         self.log_msg("=" * 50)
@@ -1500,7 +1499,7 @@ class ZendeskWizard(QMainWindow):
             self._work_items_cache,
             "preview",
             batch_size=UI_CONFIG.TABLE_BATCH_SIZE,
-            selection_state=selection_state
+            selection_state=selection_state or {}
         )
 
     def apply_table_filter(self):
@@ -1573,8 +1572,8 @@ class ZendeskWizard(QMainWindow):
 
         with self._worker_lock:
             self.worker = StepWorker(
-                lambda p, l: self.controller.perform_translation_for_indices(
-                    p, l, selected_indices, force
+                lambda p, log: self.controller.perform_translation_for_indices(
+                    p, log, selected_indices, force
                 )
             )
             self.worker.progress.connect(
@@ -1598,7 +1597,7 @@ class ZendeskWizard(QMainWindow):
             return
 
         self.status_bar.finish("Translation Complete", True)
-        stats = result
+        stats: TranslationStats = result  # type: ignore[assignment]
 
         self.log_msg("=" * 50)
         self.log_msg("TRANSLATION RESULTS")
@@ -1704,8 +1703,8 @@ class ZendeskWizard(QMainWindow):
 
         with self._worker_lock:
             self.worker = StepWorker(
-                lambda p, l: self.controller.execute_changes(
-                    non_system_selected, p, l
+                lambda p, log: self.controller.execute_changes(
+                    non_system_selected, p, log
                 )
             )
             self.worker.progress.connect(
@@ -1775,7 +1774,7 @@ class ZendeskWizard(QMainWindow):
 
         with self._worker_lock:
             self.worker = StepWorker(
-                lambda p, l: self.controller.load_backup_thread(p, l, filepath)
+                lambda p, log: self.controller.load_backup_thread(p, log, filepath)
             )
             self.worker.progress.connect(
                 lambda c, t, m: self.status_bar.show_progress(
@@ -1798,7 +1797,7 @@ class ZendeskWizard(QMainWindow):
 
         self.status_bar.finish("Backup Loaded", True)
 
-        items = result
+        items: List[Dict[str, Any]] = result  # type: ignore[assignment]
         self._pending_backup_items = items
 
         type_counts: Dict[str, int] = {}
@@ -1845,8 +1844,8 @@ class ZendeskWizard(QMainWindow):
 
         with self._worker_lock:
             self.worker = StepWorker(
-                lambda p, l: self.controller.perform_restore_from_data(
-                    self._pending_backup_items, p, l
+                lambda p, log: self.controller.perform_restore_from_data(
+                    self._pending_backup_items, p, log
                 )
             )
             self.worker.progress.connect(

@@ -500,7 +500,7 @@ SYSTEM_OPTION_VALUES: FrozenSet[str] = frozenset({
     'positive', 'negative', 'neutral',
     'yes', 'no', 'true', 'false', 'enabled', 'disabled',
     'active', 'inactive',
-    '-', '--', '---', '—', '–', '...',
+    '-', '--', '---', '–', '...',
     '(none)', '[none]', '(empty)', '[empty]', '(blank)', '[blank]',
     '(select)', '[select]', '-- select --', '- select -',
     'select...', 'select one', 'please select', 'choose...', 'choose one',
@@ -719,11 +719,18 @@ HC_EXCLUDED_LABELS: FrozenSet[str] = frozenset({
 # ==============================================================================
 
 
+# Locale IDs used for Dynamic Content variant creation.
+# pt-BR = 1176 (verified via Zendesk API).
+# en-US = 1, es = 2 (standard Zendesk IDs).
+LOCALE_ID_PT_BR: int = 1176
+LOCALE_ID_EN_US: int = 1
+LOCALE_ID_ES: int = 2
+
 LOCALE_ID_MAP: Dict[int, str] = {
     1: 'en-US', 2: 'es', 3: 'de', 4: 'fr', 5: 'it',
     6: 'nl', 7: 'pl', 8: 'pt-BR', 9: 'zh-CN', 10: 'ja',
     11: 'ko', 12: 'ru', 13: 'sv', 14: 'no', 15: 'da',
-    16: 'fi', 17: 'ar', 18: 'he', 19: 'tr', 20: 'cs',
+    16: 'fr', 17: 'ar', 18: 'he', 19: 'tr', 20: 'cs',
     21: 'hu', 22: 'th', 23: 'id', 24: 'uk', 25: 'vi',
     26: 'pt', 27: 'zh-TW', 28: 'ms', 29: 'ca', 30: 'sk',
     31: 'el', 32: 'bg', 33: 'ro', 34: 'hr', 35: 'sl',
@@ -731,7 +738,7 @@ LOCALE_ID_MAP: Dict[int, str] = {
     1000: 'en', 1001: 'en-GB', 1002: 'en-AU', 1003: 'en-CA',
     1004: 'es-ES', 1005: 'es-MX', 1006: 'es-419',
     1007: 'fr-CA', 1008: 'fr-FR', 1009: 'de-AT', 1010: 'de-CH',
-    1011: 'nl-BE', 1012: 'pt-PT', 1176: 'pt-br',
+    1011: 'nl-BE', 1012: 'pt-PT', 1176: 'pt-BR',
     1013: 'en-NZ', 1014: 'en-IE', 1015: 'en-ZA',
     1016: 'es-AR', 1017: 'es-CL', 1018: 'es-CO',
     1019: 'fr-BE', 1020: 'fr-CH', 1021: 'de-DE',

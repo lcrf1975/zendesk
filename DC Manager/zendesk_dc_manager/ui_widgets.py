@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QCheckBox,
     QAbstractItemView, QTextEdit,
 )
-from PyQt6.QtGui import QColor, QBrush
+from PyQt6.QtGui import QBrush
 
 from zendesk_dc_manager.config import (
     UI_CONFIG,
@@ -34,43 +34,14 @@ from zendesk_dc_manager.config import (
     SOURCE_MANUAL,
     SOURCE_ATTENTION,
     SOURCE_RESERVED,
-    SOURCE_COLORS,
-    TEXT_COLORS,
-    PLACEHOLDER_COLORS,
-    PLACEHOLDER_TEXT_COLORS,
 )
-from zendesk_dc_manager.ui_styles import get_monospace_font
-
-
-# ==============================================================================
-# COLOR HELPERS (using centralized config)
-# ==============================================================================
-
-
-def _get_source_color(source: str) -> QColor:
-    """Get background color for a source type."""
-    hex_color = SOURCE_COLORS.get(source, SOURCE_COLORS[SOURCE_NEW])
-    return QColor(hex_color)
-
-
-def _get_text_color(source: str) -> QColor:
-    """Get text color for a source type."""
-    hex_color = TEXT_COLORS.get(source, TEXT_COLORS[SOURCE_NEW])
-    return QColor(hex_color)
-
-
-def _get_placeholder_color(source: str) -> QColor:
-    """Get background color for a placeholder source type."""
-    hex_color = PLACEHOLDER_COLORS.get(source, PLACEHOLDER_COLORS['proposed'])
-    return QColor(hex_color)
-
-
-def _get_placeholder_text_color(source: str) -> QColor:
-    """Get text color for a placeholder source type."""
-    hex_color = PLACEHOLDER_TEXT_COLORS.get(
-        source, PLACEHOLDER_TEXT_COLORS['proposed']
-    )
-    return QColor(hex_color)
+from zendesk_dc_manager.ui_styles import (
+    get_monospace_font,
+    get_source_color as _get_source_color,
+    get_text_color as _get_text_color,
+    get_placeholder_color as _get_placeholder_color,
+    get_placeholder_text_color as _get_placeholder_text_color,
+)
 
 
 # ==============================================================================
@@ -309,7 +280,9 @@ class EmbeddedStatusBar(QWidget):
         self._last_current = 0
         self._last_total = 0
 
-    def show_progress(self, current: int, total: int, status: str, detail: str):
+    def show_progress(
+        self, current: int, total: int, status: str, detail: str
+    ):
         """Show progress information."""
         self.lbl_status.setText(status)
         self.lbl_detail.setText(detail)
@@ -513,7 +486,9 @@ class PreviewTableWidget(QTableWidget):
         header.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
 
         self.setAlternatingRowColors(True)
-        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.verticalHeader().setVisible(False)
         self.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
@@ -619,7 +594,9 @@ class PreviewTableWidget(QTableWidget):
 
         # Column 2: Context
         context_item = QTableWidgetItem(item.get('context', ''))
-        context_item.setFlags(context_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        context_item.setFlags(
+            context_item.flags() & ~Qt.ItemFlag.ItemIsEditable
+        )
         self.setItem(row, 2, context_item)
 
         # Column 3: ID
@@ -1026,7 +1003,9 @@ class PreviewTableWidget(QTableWidget):
                         f"Existing DC: {placeholder_text}"
                     )
                 else:
-                    placeholder_item.setToolTip(f"Proposed: {placeholder_text}")
+                    placeholder_item.setToolTip(
+                        f"Proposed: {placeholder_text}"
+                    )
 
     def get_row_for_data_index(self, data_index: int) -> int:
         """Get the table row for a given data index."""

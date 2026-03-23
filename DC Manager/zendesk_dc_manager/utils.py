@@ -12,13 +12,11 @@ import re
 import html
 import hashlib
 import unicodedata
-import threading
 from typing import Dict, List, Tuple, Set, Optional
 
 from zendesk_dc_manager.config import (
     COMMON_SHORT_WORDS,
     TRANSLATABLE_SHORT_WORDS,
-    logger,
 )
 
 
@@ -197,46 +195,6 @@ def calculate_eta(start_time: float, processed: int, total: int) -> str:
 
 
 # ==============================================================================
-# THREAD-SAFE ATOMIC COUNTER
-# ==============================================================================
-
-
-class AtomicCounter:
-    """Thread-safe counter for tracking operations."""
-
-    def __init__(self, initial: int = 0):
-        self._value = initial
-        self._lock = threading.Lock()
-
-    def increment(self) -> int:
-        with self._lock:
-            self._value += 1
-            return self._value
-
-    def decrement(self) -> int:
-        with self._lock:
-            self._value -= 1
-            return self._value
-
-    def add(self, amount: int) -> int:
-        with self._lock:
-            self._value += amount
-            return self._value
-
-    def reset(self, value: int = 0) -> None:
-        with self._lock:
-            self._value = value
-
-    @property
-    def value(self) -> int:
-        with self._lock:
-            return self._value
-
-    def __repr__(self) -> str:
-        return f"AtomicCounter({self.value})"
-
-
-# ==============================================================================
 # ACRONYM PROTECTOR
 # ==============================================================================
 
@@ -402,7 +360,8 @@ class AcronymProtector:
 
         all_matches = {
             m for m in all_matches
-            if m not in COMMON_SHORT_WORDS and m not in TRANSLATABLE_SHORT_WORDS
+            if m not in COMMON_SHORT_WORDS
+            and m not in TRANSLATABLE_SHORT_WORDS
         }
 
         if not all_matches:
