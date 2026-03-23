@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Dynamic CO Manager</title>
+  <title>Custom Object Record Manager</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/combine/npm/@zendeskgarden/css-bedrock@7.0.21,npm/@zendeskgarden/css-utilities@4.3.0">
   <link href="https://cdn.jsdelivr.net/npm/tom-select@2.2.2/dist/css/tom-select.default.min.css" rel="stylesheet">
   <link href="https://unpkg.com/tabulator-tables@5.5.0/dist/css/tabulator.min.css" rel="stylesheet">
@@ -12,10 +12,11 @@
   <div id="app-container">
     
     <div id="loader">
-      <div id="loader-text">Loading...</div>
+      <div id="loader-text" data-i18n="loader.customObjects">Loading...</div>
       <div class="progress-container">
         <div class="progress-bar-indeterminate"></div>
       </div>
+      <div id="loader-timer" style="margin-top: 8px; font-size: 12px; color: #68737d;"></div>
     </div>
     
     <div id="selector-view" style="display: none;"></div>
@@ -24,43 +25,44 @@
       
       <div class="toolbar-header">
         <div class="toolbar-title">
-          <h3 id="table-title">Dashboard</h3>
+          <h3 id="table-title" data-i18n="table.dashboard">Dashboard</h3>
           <span id="record-summary" class="record-summary"></span>
         </div>
         <div class="toolbar-actions">
-          <button id="btn-new-record" class="btn">Add New Record</button>
-          <button id="btn-advanced-filter" class="btn btn-secondary">Advanced Filter</button>
-          <button id="btn-export-csv" class="btn btn-secondary">Export CSV</button>
-          <button id="btn-back-selector" class="btn btn-secondary">Change Object</button>
+          <button id="btn-new-record" class="btn btn-secondary" data-i18n="table.addRecord">Add New Record</button>
+          <button id="btn-advanced-filter" class="btn btn-secondary" data-i18n="table.advancedFilter">Advanced Filter</button>
+          <button id="btn-reverse-lookup" class="btn btn-purple" data-i18n="table.reverseLookup">Reverse Lookup</button>
+          <button id="btn-export-csv" class="btn btn-secondary" data-i18n="table.exportCsv">Export CSV</button>
+          <button id="btn-back-selector" class="btn btn-orange" data-i18n="table.changeObject">Change Object</button>
         </div>
       </div>
 
       <div class="toolbar-controls">
         <div class="search-container">
-          <input type="text" id="table-search" placeholder="Search all fields..." class="search-input" />
+          <input type="text" id="table-search" placeholder="Search all fields..." class="search-input" data-i18n-placeholder="table.searchPlaceholder" />
         </div>
         <div class="column-controls">
-          <button id="btn-restore-columns" class="btn btn-secondary">Restore Columns</button>
-          <select id="column-selector" multiple placeholder="Select visible columns..."></select>
+          <button id="btn-restore-columns" class="btn btn-secondary" data-i18n="table.restoreColumns">Restore Columns</button>
+          <select id="column-selector" multiple placeholder="Select visible columns..." data-i18n-placeholder="table.selectColumns"></select>
         </div>
       </div>
 
       <div id="filter-bar" style="display: none;">
         <div class="filter-bar-header">
-          Advanced Filters
+          <span data-i18n="filter.title">Advanced Filters</span>
           <span class="filter-logic-toggle">
-            Match:
-            <label><input type="radio" name="filter-logic" value="and" checked> ALL conditions (AND)</label>
-            <label><input type="radio" name="filter-logic" value="or"> ANY condition (OR)</label>
+            <span data-i18n="filter.match">Match:</span>
+            <label><input type="radio" name="filter-logic" value="and" checked> <span data-i18n="filter.and">ALL conditions (AND)</span></label>
+            <label><input type="radio" name="filter-logic" value="or"> <span data-i18n="filter.or">ANY condition (OR)</span></label>
           </span>
         </div>
-        <div class="filter-bar-hint">* wildcard: <code>abc*</code> starts with &nbsp;·&nbsp; <code>*xyz</code> ends with &nbsp;·&nbsp; <code>*text*</code> contains &nbsp;·&nbsp; Numeric/date operators use exact values</div>
+        <div class="filter-bar-hint" data-i18n-html="filter.hint">* wildcard: <code>abc*</code> starts with &nbsp;·&nbsp; <code>*xyz</code> ends with &nbsp;·&nbsp; <code>*text*</code> contains &nbsp;·&nbsp; Numeric/date operators use exact values</div>
         <div id="filter-rows"></div>
         <div class="filter-bar-footer">
-          <button id="btn-add-filter-row" class="btn btn-secondary">+ Add Condition</button>
+          <button id="btn-add-filter-row" class="btn btn-secondary" data-i18n="filter.addCondition">+ Add Condition</button>
           <div style="display: flex; gap: 8px;">
-            <button id="btn-apply-filters" class="btn">Apply Filter</button>
-            <button id="btn-clear-filters" class="btn btn-secondary">Clear All</button>
+            <button id="btn-apply-filters" class="btn" data-i18n="filter.apply">Apply Filter</button>
+            <button id="btn-clear-filters" class="btn btn-secondary" data-i18n="filter.clearAll">Clear All</button>
           </div>
         </div>
       </div>
@@ -74,13 +76,30 @@
   <!-- Export CSV Modal -->
   <div id="export-modal-overlay" style="display: none;">
     <div id="export-modal">
-      <h3>Export to CSV</h3>
+      <h3 data-i18n="export.title">Export to CSV</h3>
       <p id="export-modal-info"></p>
-      <p style="font-size: 13px; color: #2f3941; margin: 0;">Which columns should be included?</p>
+      <p style="font-size: 13px; color: #2f3941; margin: 0;" data-i18n="export.question">Which columns should be included?</p>
       <div id="export-modal-actions">
-        <button id="export-modal-cancel" class="btn btn-secondary">Cancel</button>
-        <button id="export-btn-visible" class="btn btn-secondary">Visible Columns Only</button>
-        <button id="export-btn-all" class="btn">All Fields</button>
+        <button id="export-modal-cancel" class="btn btn-secondary" data-i18n="export.cancel">Cancel</button>
+        <button id="export-btn-visible" class="btn btn-secondary" data-i18n="export.visible">Visible Columns Only</button>
+        <button id="export-btn-all" class="btn" data-i18n="export.all">All Fields</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reverse Lookup Modal -->
+  <div id="reverse-lookup-overlay" style="display: none;">
+    <div id="reverse-lookup-modal"></div>
+  </div>
+
+  <!-- Unsaved Changes Modal -->
+  <div id="unsaved-modal-overlay" style="display: none;">
+    <div id="unsaved-modal">
+      <h3 data-i18n="form.unsavedTitle">Unsaved Changes</h3>
+      <p data-i18n="form.unsavedBody">You have unsaved changes that will be lost if you leave.</p>
+      <div id="unsaved-modal-actions">
+        <button id="unsaved-modal-stay" class="btn btn-secondary" data-i18n="form.unsavedStay">Stay</button>
+        <button id="unsaved-modal-leave" class="btn" data-i18n="form.unsavedLeave">Leave</button>
       </div>
     </div>
   </div>
@@ -91,8 +110,8 @@
       <h3 id="delete-modal-title"></h3>
       <div id="delete-modal-body"></div>
       <div id="delete-modal-actions">
-        <button id="delete-modal-cancel" class="btn btn-secondary">Cancel</button>
-        <button id="delete-modal-confirm" class="btn" disabled>Delete</button>
+        <button id="delete-modal-cancel" class="btn btn-secondary" data-i18n="form.cancel">Cancel</button>
+        <button id="delete-modal-confirm" class="btn" disabled data-i18n="row.delete">Delete</button>
       </div>
     </div>
   </div>

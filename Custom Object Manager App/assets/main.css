@@ -68,10 +68,84 @@ input[type="checkbox"] {
   background-color: transparent;
   color: #1f73b7;
   border: 1px solid #1f73b7;
-  margin-left: 8px;
 }
 
 .btn-secondary:hover {
+  background-color: #f8f9f9;
+}
+
+.btn-orange {
+  background-color: #e07b00;
+  color: white;
+  border: none;
+}
+
+.btn-orange:hover {
+  background-color: #b86300;
+}
+
+.btn-purple {
+  background-color: #7c3aed;
+  color: white;
+  border: none;
+}
+
+.btn-purple:hover {
+  background-color: #6d28d9;
+}
+
+/* Consistent disabled state for every button variant */
+.btn:disabled,
+.btn-secondary:disabled,
+.btn-orange:disabled,
+.btn-purple:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Reverse Lookup modal */
+#reverse-lookup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(47, 57, 65, 0.6);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#reverse-lookup-modal {
+  background: white;
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 960px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+
+.rl-record-link { color: #1f73b7; text-decoration: none; font-weight: 600; }
+.rl-record-link:hover { text-decoration: underline; cursor: pointer; }
+
+.lookup-type-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.lookup-type-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 6px 10px;
+  border: 1px solid #e9ebed;
+  border-radius: 4px;
+}
+
+.lookup-type-label:hover {
   background-color: #f8f9f9;
 }
 
@@ -218,6 +292,12 @@ input[type="checkbox"] {
   100% { left: 100%; width: 50%; }
 }
 
+.progress-bar-determinate {
+  height: 100%;
+  background-color: #1f73b7;
+  transition: width 0.25s ease;
+}
+
 /* Tabulator overrides to match Zendesk */
 .tabulator {
   font-size: 13px;
@@ -253,26 +333,49 @@ input[type="checkbox"] {
   background-color: #f8f9f9;
 }
 
-/* Related Records List */
+/* Usage & Impact: collapsible <details> sections */
 .related-section {
-  margin-bottom: 24px;
+  margin-bottom: 8px;
   background: #f8f9f9;
   border: 1px solid #e9ebed;
   border-radius: 4px;
-  padding: 16px;
 }
-.related-section h4 {
-  margin: 0 0 12px 0;
+.related-section summary {
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 14px;
+  font-weight: 600;
   color: #2f3941;
-  border-bottom: 1px solid #d8dcde;
-  padding-bottom: 8px;
+  border-radius: 4px;
 }
-.related-section h4 span {
+.related-section summary::-webkit-details-marker,
+.related-section summary::marker { display: none; }
+.related-section summary:hover { background-color: #f0f2f4; }
+.related-section[open] summary {
+  border-bottom: 1px solid #d8dcde;
+  border-radius: 4px 4px 0 0;
+}
+.related-section .section-meta {
+  flex: 1;
   font-weight: normal;
   color: #68737d;
   font-size: 12px;
 }
+.related-section .section-toggle {
+  color: #68737d;
+  font-size: 11px;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.related-section[open] .section-toggle { transform: rotate(90deg); }
+.related-section .related-list { padding: 0 14px 8px 14px; margin: 0; }
+.related-list a { color: #1f73b7; text-decoration: none; }
+.related-list a:hover { text-decoration: underline; }
 .related-list {
   list-style: none;
   padding: 0;
@@ -297,7 +400,57 @@ input[type="checkbox"] {
   font-size: 11px;
 }
 
+/* Possible-match badge (name-based, amber) */
+.badge-possible {
+  background: #fff3e0;
+  color: #b45309;
+  border: 1px solid #f59e0b;
+}
+
+/* Divider header between confirmed and possible match sections */
+.possible-matches-divider {
+  margin: 16px 0 8px 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #f59e0b;
+  border-radius: 4px;
+}
+
 /* Delete Confirmation Modal */
+#unsaved-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(47, 57, 65, 0.6);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#unsaved-modal {
+  background: white;
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 380px;
+  width: 90%;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+
+#unsaved-modal h3 { margin: 0 0 12px 0; font-size: 16px; }
+#unsaved-modal p  { margin: 0; font-size: 14px; color: #2f3941; }
+
+#unsaved-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #e9ebed;
+}
+
 #delete-modal-overlay {
   position: fixed;
   inset: 0;
@@ -519,3 +672,4 @@ input[type="checkbox"] {
   border-top: 1px solid #e9ebed;
   flex-wrap: wrap;
 }
+
