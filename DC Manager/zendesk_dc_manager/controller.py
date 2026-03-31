@@ -18,6 +18,7 @@ from zendesk_dc_manager.config import (
     SOURCE_TRANSLATED,
     SOURCE_CACHE,
     SOURCE_FAILED,
+    SOURCE_ATTENTION,
     LOCALE_ID_PT_BR,
     LOCALE_ID_EN_US,
     LOCALE_ID_ES,
@@ -28,6 +29,8 @@ from zendesk_dc_manager.types import TranslationStats
 
 
 DC_PLACEHOLDER_PATTERN = re.compile(r'\{\{dc\.([^}]+)\}\}')
+_RE_NON_ALNUM = re.compile(r'[^a-z0-9]+')
+_RE_MULTI_UNDERSCORE = re.compile(r'_+')
 
 SYSTEM_FIELD_TYPES = frozenset([
     'subject', 'description', 'status', 'tickettype', 'priority',
@@ -55,14 +58,14 @@ CONTEXT_MAP = {
 }
 
 TYPE_DISPLAY_MAP = {
-    'ticket_field': 'Ticket Field',
-    'ticket_field_option': 'Ticket Field Option',
-    'ticket_form': 'Ticket Form',
-    'custom_status': 'Custom Status',
-    'user_field': 'User Field',
-    'user_field_option': 'User Field Option',
-    'organization_field': 'Organization Field',
-    'organization_field_option': 'Organization Field Option',
+    'ticket_field': 'Field',
+    'ticket_field_option': 'Field Option',
+    'ticket_form': 'Form',
+    'custom_status': 'Status',
+    'user_field': 'Field',
+    'user_field_option': 'Field Option',
+    'organization_field': 'Field',
+    'organization_field_option': 'Field Option',
     'group': 'Group',
     'macro': 'Macro',
     'trigger': 'Trigger',
@@ -90,9 +93,9 @@ def generate_dc_name(text: str, max_length: int = 50) -> str:
     normalized = unicodedata.normalize('NFKD', text)
     ascii_text = normalized.encode('ASCII', 'ignore').decode('ASCII')
     lower_text = ascii_text.lower()
-    cleaned = re.sub(r'[^a-z0-9]+', '_', lower_text)
+    cleaned = _RE_NON_ALNUM.sub('_', lower_text)
     cleaned = cleaned.strip('_')
-    cleaned = re.sub(r'_+', '_', cleaned)
+    cleaned = _RE_MULTI_UNDERSCORE.sub('_', cleaned)
 
     if len(cleaned) > max_length:
         cleaned = cleaned[:max_length].rstrip('_')
@@ -115,7 +118,7 @@ def is_dc_placeholder(text: str) -> bool:
     """Check if text is already a DC placeholder."""
     if not text:
         return False
-    return bool(DC_PLACEHOLDER_PATTERN.match(str(text).strip()))
+    return bool(DC_PLACEHOLDER_PATTERN.fullmatch(str(text).strip()))
 
 
 def extract_dc_name_from_placeholder(placeholder: str) -> str:
@@ -180,6 +183,7 @@ class ZendeskController:
         self._reset_stop()
 
         self.api = ZendeskAPI(subdomain, email, token)
+        self.invalidate_dc_cache()
         self.backup_folder = backup_folder
 
         if backup_folder and not os.path.exists(backup_folder):
@@ -260,9 +264,6 @@ class ZendeskController:
         """Scan Zendesk objects and analyze for DC opportunities."""
         self._reset_stop()
         self.work_items = []
-        self.dc_map = {}
-        self.dc_name_map = {}
-        self.dc_by_name = {}
 
         stats = {
             'valid_fields': 0,
@@ -282,30 +283,59 @@ class ZendeskController:
             'system_excluded': 0,
         }
 
-        log_signal.emit("Fetching existing Dynamic Content...")
-        progress_signal.emit(0, 0, "Fetching DC items...")
-
-        try:
-            dc_items = self.api.get_dynamic_content_items()
-            self._build_dc_cache(dc_items)
-            log_signal.emit(f"Found {len(self.dc_map)} existing DC items")
-
-        except Exception as e:
-            log_signal.emit(f"Warning: Could not fetch DC items: {e}")
+        refresh_dc = config.get('refresh_dc', False)
+        if self.dc_map and not refresh_dc:
+            log_signal.emit(
+                f"Using cached DC items ({len(self.dc_map)} items). "
+                f"Check 'Refresh DC cache' to re-fetch."
+            )
+        else:
+            log_signal.emit("Fetching existing Dynamic Content...")
+            progress_signal.emit(0, 0, "Fetching DC items: 0 fetched")
+            try:
+                self.api.page_callback = lambda n: progress_signal.emit(
+                    0, 0, f"Fetching DC items: {n} fetched"
+                )
+                dc_items = self.api.get_dynamic_content_items()
+                self.api.page_callback = None
+                self._build_dc_cache(dc_items)
+                dc_count = len(self.dc_map)
+                progress_signal.emit(dc_count, dc_count, f"Fetching DC items: {dc_count} fetched")
+                log_signal.emit(f"Found {dc_count} existing DC items")
+            except Exception as e:
+                self.api.page_callback = None
+                log_signal.emit(f"Warning: Could not fetch DC items: {e}")
 
         if self._should_stop():
             raise Exception("Canceled by user")
 
         step = 0
-        total_steps = sum(1 for v in config.values() if v)
+        total_steps = sum(
+            1 for k, v in config.items() if k != 'refresh_dc' and v
+        )
+
+        def make_cb(label):
+            def cb(count, total, name):
+                if total == 0:
+                    # Fetch phase: API is still loading pages
+                    progress_signal.emit(
+                        0, 0, f"{label}: {count} fetched..."
+                    )
+                else:
+                    # Iteration phase: all items loaded, processing each
+                    progress_signal.emit(
+                        count, total, f"{label}: {name}"
+                    )
+            return cb
 
         if config.get('fields'):
             step += 1
-            progress_signal.emit(
-                step, total_steps, "Scanning ticket fields..."
+            label = "Scanning ticket fields"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
+            count, system_count = self._scan_ticket_fields(
+                log_signal, make_cb(label)
             )
-            log_signal.emit("Scanning ticket fields...")
-            count, system_count = self._scan_ticket_fields(log_signal)
             stats['valid_fields'] = count
             stats['system_excluded'] += system_count
 
@@ -314,23 +344,23 @@ class ZendeskController:
 
         if config.get('forms'):
             step += 1
-            progress_signal.emit(
-                step, total_steps, "Scanning ticket forms..."
+            label = "Scanning ticket forms"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
+            stats['valid_forms'] = self._scan_ticket_forms(
+                log_signal, make_cb(label)
             )
-            log_signal.emit("Scanning ticket forms...")
-            stats['valid_forms'] = self._scan_ticket_forms(log_signal)
 
         if self._should_stop():
             raise Exception("Canceled by user")
 
         if config.get('custom_statuses'):
             step += 1
-            progress_signal.emit(
-                step, total_steps, "Scanning custom statuses..."
-            )
-            log_signal.emit("Scanning custom statuses...")
+            label = "Scanning custom statuses"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
             stats['valid_custom_statuses'] = self._scan_custom_statuses(
-                log_signal
+                log_signal, make_cb(label)
             )
 
         if self._should_stop():
@@ -338,116 +368,141 @@ class ZendeskController:
 
         if config.get('user_fields'):
             step += 1
-            progress_signal.emit(
-                step, total_steps, "Scanning user fields..."
+            label = "Scanning user fields"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
+            stats['valid_user_fields'] = self._scan_user_fields(
+                log_signal, make_cb(label)
             )
-            log_signal.emit("Scanning user fields...")
-            stats['valid_user_fields'] = self._scan_user_fields(log_signal)
 
         if self._should_stop():
             raise Exception("Canceled by user")
 
         if config.get('org_fields'):
             step += 1
-            progress_signal.emit(
-                step, total_steps, "Scanning organization fields..."
+            label = "Scanning organization fields"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
+            stats['valid_org_fields'] = self._scan_org_fields(
+                log_signal, make_cb(label)
             )
-            log_signal.emit("Scanning organization fields...")
-            stats['valid_org_fields'] = self._scan_org_fields(log_signal)
 
         if self._should_stop():
             raise Exception("Canceled by user")
 
         if config.get('groups'):
             step += 1
-            progress_signal.emit(step, total_steps, "Scanning groups...")
-            log_signal.emit("Scanning groups...")
-            stats['valid_groups'] = self._scan_groups(log_signal)
+            label = "Scanning groups"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
+            stats['valid_groups'] = self._scan_groups(
+                log_signal, make_cb(label)
+            )
 
         if self._should_stop():
             raise Exception("Canceled by user")
 
         if config.get('macros'):
             step += 1
-            progress_signal.emit(step, total_steps, "Scanning macros...")
-            log_signal.emit("Scanning macros...")
-            stats['valid_macros'] = self._scan_macros(log_signal)
+            label = "Scanning macros"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
+            stats['valid_macros'] = self._scan_macros(
+                log_signal, make_cb(label)
+            )
 
         if self._should_stop():
             raise Exception("Canceled by user")
 
         if config.get('triggers'):
             step += 1
-            progress_signal.emit(step, total_steps, "Scanning triggers...")
-            log_signal.emit("Scanning triggers...")
-            stats['valid_triggers'] = self._scan_triggers(log_signal)
+            label = "Scanning triggers"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
+            stats['valid_triggers'] = self._scan_triggers(
+                log_signal, make_cb(label)
+            )
 
         if self._should_stop():
             raise Exception("Canceled by user")
 
         if config.get('automations'):
             step += 1
-            progress_signal.emit(
-                step, total_steps, "Scanning automations..."
+            label = "Scanning automations"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
+            stats['valid_automations'] = self._scan_automations(
+                log_signal, make_cb(label)
             )
-            log_signal.emit("Scanning automations...")
-            stats['valid_automations'] = self._scan_automations(log_signal)
 
         if self._should_stop():
             raise Exception("Canceled by user")
 
         if config.get('views'):
             step += 1
-            progress_signal.emit(step, total_steps, "Scanning views...")
-            log_signal.emit("Scanning views...")
-            stats['valid_views'] = self._scan_views(log_signal)
+            label = "Scanning views"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
+            stats['valid_views'] = self._scan_views(
+                log_signal, make_cb(label)
+            )
 
         if self._should_stop():
             raise Exception("Canceled by user")
 
         if config.get('sla_policies'):
             step += 1
-            progress_signal.emit(
-                step, total_steps, "Scanning SLA policies..."
+            label = "Scanning SLA policies"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
+            stats['valid_sla_policies'] = self._scan_sla_policies(
+                log_signal, make_cb(label)
             )
-            log_signal.emit("Scanning SLA policies...")
-            stats['valid_sla_policies'] = self._scan_sla_policies(log_signal)
 
         if self._should_stop():
             raise Exception("Canceled by user")
 
         if config.get('cats'):
             step += 1
-            progress_signal.emit(
-                step, total_steps, "Scanning HC categories..."
+            label = "Scanning HC categories"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
+            stats['valid_cats'] = self._scan_hc_categories(
+                log_signal, make_cb(label)
             )
-            log_signal.emit("Scanning Help Center categories...")
-            stats['valid_cats'] = self._scan_hc_categories(log_signal)
 
         if self._should_stop():
             raise Exception("Canceled by user")
 
         if config.get('sects'):
             step += 1
-            progress_signal.emit(
-                step, total_steps, "Scanning HC sections..."
+            label = "Scanning HC sections"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
+            stats['valid_sects'] = self._scan_hc_sections(
+                log_signal, make_cb(label)
             )
-            log_signal.emit("Scanning Help Center sections...")
-            stats['valid_sects'] = self._scan_hc_sections(log_signal)
 
         if self._should_stop():
             raise Exception("Canceled by user")
 
         if config.get('arts'):
             step += 1
-            progress_signal.emit(
-                step, total_steps, "Scanning HC articles..."
+            label = "Scanning HC articles"
+            progress_signal.emit(step, total_steps, label)
+            log_signal.emit(label + "...")
+            stats['valid_arts'] = self._scan_hc_articles(
+                log_signal, make_cb(label)
             )
-            log_signal.emit("Scanning Help Center articles...")
-            stats['valid_arts'] = self._scan_hc_articles(log_signal)
 
         log_signal.emit(f"Scan complete. Found {len(self.work_items)} items.")
         return stats
+
+    def invalidate_dc_cache(self):
+        """Clear the DC cache so the next scan re-fetches from the API."""
+        self.dc_map = {}
+        self.dc_name_map = {}
+        self.dc_by_name = {}
 
     def _build_dc_cache(self, dc_items: List[Dict]):
         """Build DC lookup caches from list of DC items."""
@@ -537,14 +592,23 @@ class ZendeskController:
         obj_type: str,
         name_field: str = 'title',
         raw_field: str = None,
+        description_key: str = None,
+        raw_description_key: str = None,
         extra_func=None,
         is_system_func=None,
+        progress_callback=None,
     ) -> int:
         """Generic scanner for simple named objects without sub-items."""
         raw_field = raw_field or f'raw_{name_field}'
         count = 0
         try:
-            items = api_method()
+            if progress_callback:
+                self.api.page_callback = lambda n: progress_callback(n, 0, '')
+            try:
+                items = api_method()
+            finally:
+                self.api.page_callback = None
+            total = len(items)
             for item in items:
                 if self._should_stop():
                     break
@@ -574,10 +638,53 @@ class ZendeskController:
                     )
                 self._add_work_item(**kwargs)
                 count += 1
+                if progress_callback:
+                    progress_callback(count, total, name)
+
+                # Also scan description field if requested
+                if description_key:
+                    self._add_description_work_item(
+                        item, obj_type, obj_id, description_key,
+                        raw_description_key, is_system, extra
+                    )
+
         except Exception as e:
             log_signal.emit(f"  Error scanning {obj_type}: {e}")
             logger.error(f"Error scanning {obj_type}: {e}")
         return count
+
+    def _add_description_work_item(
+        self,
+        api_item: Dict,
+        obj_type: str,
+        obj_id: int,
+        description_key: str,
+        raw_description_key: str,
+        is_system: bool,
+        extra: Dict,
+    ):
+        """Add a work item for a description field if the value is non-empty."""
+        raw_key = raw_description_key or f'raw_{description_key}'
+        desc = api_item.get(description_key, '') or ''
+        raw_desc = api_item.get(raw_key, '') or desc
+        if not desc.strip():
+            return
+        dc_match = DC_PLACEHOLDER_PATTERN.search(str(raw_desc))
+        kwargs = dict(
+            obj_type=obj_type,
+            obj_id=obj_id,
+            field_name=description_key,
+            current_value=desc,
+            raw_value=raw_desc,
+            is_system=is_system,
+        )
+        if extra:
+            kwargs['extra'] = extra
+        if dc_match:
+            placeholder = dc_match.group(0)
+            kwargs['dc_placeholder'] = placeholder
+            kwargs['dc_info'] = self._find_dc_by_placeholder(placeholder)
+        self._add_work_item(**kwargs)
 
     def _scan_fields_with_options(
         self,
@@ -585,11 +692,21 @@ class ZendeskController:
         api_method,
         field_type: str,
         option_type: str,
+        name_key: str = 'title',
+        raw_key: str = 'raw_title',
+        description_key: str = None,
+        raw_description_key: str = None,
         field_extra_func=None,
         option_extra_func=None,
         is_system_func=None,
+        progress_callback=None,
     ) -> Tuple[int, int]:
         """Generic scanner for fields with custom_field_options sub-items.
+
+        name_key / raw_key select which Zendesk field contains the
+        user-visible label (e.g. 'title_in_portal' for ticket fields).
+        description_key / raw_description_key optionally scan a second
+        text field (e.g. 'description' hint text).
 
         Returns:
             Tuple of (field_count, system_field_count)
@@ -597,14 +714,23 @@ class ZendeskController:
         count = 0
         system_count = 0
         try:
-            fields = api_method()
+            if progress_callback:
+                self.api.page_callback = lambda n: progress_callback(n, 0, '')
+            try:
+                fields = api_method()
+            finally:
+                self.api.page_callback = None
+            total = len(fields)
             for field in fields:
                 if self._should_stop():
                     break
 
                 field_id = field.get('id')
-                title = field.get('title', '')
-                raw_title = field.get('raw_title', title)
+                # Fall back to plain 'title' if the target key is absent/empty
+                title = field.get(name_key, '') or field.get('title', '')
+                raw_title = (
+                    field.get(raw_key, '') or field.get('raw_title', title)
+                )
                 is_system = is_system_func(field) if is_system_func else False
                 if is_system:
                     system_count += 1
@@ -616,7 +742,7 @@ class ZendeskController:
                 kwargs = dict(
                     obj_type=field_type,
                     obj_id=field_id,
-                    field_name='title',
+                    field_name=name_key,
                     current_value=title,
                     raw_value=raw_title,
                     is_system=is_system,
@@ -631,6 +757,15 @@ class ZendeskController:
                     )
                 self._add_work_item(**kwargs)
                 count += 1
+                if progress_callback:
+                    progress_callback(count, total, title)
+
+                # Also scan description field if requested
+                if description_key:
+                    self._add_description_work_item(
+                        field, field_type, field_id, description_key,
+                        raw_description_key, is_system, field_extra
+                    )
 
                 for opt in field.get('custom_field_options', []):
                     if self._should_stop():
@@ -682,7 +817,7 @@ class ZendeskController:
     # SCAN METHODS
     # =========================================================================
 
-    def _scan_ticket_fields(self, log_signal) -> Tuple[int, int]:
+    def _scan_ticket_fields(self, log_signal, progress_callback=None) -> Tuple[int, int]:
         """Scan ticket fields and their options."""
         SYSTEM_FIELD_KEYS = frozenset([
             'approval_status',
@@ -751,25 +886,31 @@ class ZendeskController:
             self.api.get_ticket_fields,
             'ticket_field',
             'ticket_field_option',
+            name_key='title_in_portal',
+            raw_key='raw_title_in_portal',
+            description_key='description',
+            raw_description_key='raw_description',
             field_extra_func=field_extra,
             option_extra_func=option_extra,
             is_system_func=is_system,
+            progress_callback=progress_callback,
         )
         log_signal.emit(
             f"  Found {count} ticket fields ({system_count} system)"
         )
         return count, system_count
 
-    def _scan_ticket_forms(self, log_signal) -> int:
+    def _scan_ticket_forms(self, log_signal, progress_callback=None) -> int:
         """Scan ticket forms."""
         count = self._scan_named_objects(
             log_signal, self.api.get_ticket_forms, 'ticket_form',
             name_field='name', raw_field='raw_name',
+            progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} ticket forms")
         return count
 
-    def _scan_custom_statuses(self, log_signal) -> int:
+    def _scan_custom_statuses(self, log_signal, progress_callback=None) -> int:
         """Scan custom ticket statuses."""
         PROTECTED_STATUS_CATEGORIES = frozenset(['hold'])
         SYSTEM_STATUS_NAMES = frozenset([
@@ -805,100 +946,120 @@ class ZendeskController:
 
         count = self._scan_named_objects(
             log_signal, self.api.get_custom_statuses, 'custom_status',
-            name_field='agent_label', raw_field='raw_agent_label',
+            name_field='end_user_label', raw_field='raw_end_user_label',
+            description_key='end_user_description',
+            raw_description_key='raw_end_user_description',
             extra_func=status_extra, is_system_func=is_system,
+            progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} custom statuses")
         return count
 
-    def _scan_user_fields(self, log_signal) -> int:
+    def _scan_user_fields(self, log_signal, progress_callback=None) -> int:
         """Scan user fields and their options."""
         count, _ = self._scan_fields_with_options(
             log_signal, self.api.get_user_fields,
             'user_field', 'user_field_option',
+            description_key='description',
+            raw_description_key='raw_description',
+            progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} user fields")
         return count
 
-    def _scan_org_fields(self, log_signal) -> int:
+    def _scan_org_fields(self, log_signal, progress_callback=None) -> int:
         """Scan organization fields and their options."""
         count, _ = self._scan_fields_with_options(
             log_signal, self.api.get_organization_fields,
             'organization_field', 'organization_field_option',
+            description_key='description',
+            raw_description_key='raw_description',
+            progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} organization fields")
         return count
 
-    def _scan_groups(self, log_signal) -> int:
+    def _scan_groups(self, log_signal, progress_callback=None) -> int:
         """Scan groups."""
         count = self._scan_named_objects(
             log_signal, self.api.get_groups, 'group', name_field='name',
+            progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} groups")
         return count
 
-    def _scan_macros(self, log_signal) -> int:
+    def _scan_macros(self, log_signal, progress_callback=None) -> int:
         """Scan macros."""
         count = self._scan_named_objects(
             log_signal, self.api.get_macros, 'macro',
+            progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} macros")
         return count
 
-    def _scan_triggers(self, log_signal) -> int:
+    def _scan_triggers(self, log_signal, progress_callback=None) -> int:
         """Scan triggers."""
         count = self._scan_named_objects(
             log_signal, self.api.get_triggers, 'trigger',
+            progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} triggers")
         return count
 
-    def _scan_automations(self, log_signal) -> int:
+    def _scan_automations(self, log_signal, progress_callback=None) -> int:
         """Scan automations."""
         count = self._scan_named_objects(
             log_signal, self.api.get_automations, 'automation',
+            progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} automations")
         return count
 
-    def _scan_views(self, log_signal) -> int:
+    def _scan_views(self, log_signal, progress_callback=None) -> int:
         """Scan views."""
         count = self._scan_named_objects(
             log_signal, self.api.get_views, 'view',
+            progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} views")
         return count
 
-    def _scan_sla_policies(self, log_signal) -> int:
+    def _scan_sla_policies(self, log_signal, progress_callback=None) -> int:
         """Scan SLA policies."""
         count = self._scan_named_objects(
             log_signal, self.api.get_sla_policies, 'sla_policy',
+            progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} SLA policies")
         return count
 
-    def _scan_hc_categories(self, log_signal) -> int:
+    def _scan_hc_categories(self, log_signal, progress_callback=None) -> int:
         """Scan Help Center categories."""
         count = self._scan_named_objects(
             log_signal, self.api.get_hc_categories, 'category',
             name_field='name',
+            description_key='description',
+            progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} HC categories")
         return count
 
-    def _scan_hc_sections(self, log_signal) -> int:
+    def _scan_hc_sections(self, log_signal, progress_callback=None) -> int:
         """Scan Help Center sections."""
         count = self._scan_named_objects(
             log_signal, self.api.get_hc_sections, 'section',
             name_field='name',
+            description_key='description',
+            progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} HC sections")
         return count
 
-    def _scan_hc_articles(self, log_signal) -> int:
+    def _scan_hc_articles(self, log_signal, progress_callback=None) -> int:
         """Scan Help Center articles."""
         count = self._scan_named_objects(
             log_signal, self.api.get_hc_articles, 'article',
+            progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} HC articles")
         return count
@@ -1094,13 +1255,13 @@ class ZendeskController:
                     )
                     if en_result:
                         self.work_items[idx]['en'] = en_result
-                        self.work_items[idx]['en_source'] = (
-                            SOURCE_CACHE if en_from_cache
-                            else SOURCE_TRANSLATED
-                        )
-                        if en_from_cache:
+                        if en_result.strip().lower() == pt_text.strip().lower():
+                            self.work_items[idx]['en_source'] = SOURCE_ATTENTION
+                        elif en_from_cache:
+                            self.work_items[idx]['en_source'] = SOURCE_CACHE
                             stats.from_cache += 1
                         else:
+                            self.work_items[idx]['en_source'] = SOURCE_TRANSLATED
                             stats.translated += 1
                     else:
                         self.work_items[idx]['en_source'] = SOURCE_FAILED
@@ -1112,13 +1273,13 @@ class ZendeskController:
                     )
                     if es_result:
                         self.work_items[idx]['es'] = es_result
-                        self.work_items[idx]['es_source'] = (
-                            SOURCE_CACHE if es_from_cache
-                            else SOURCE_TRANSLATED
-                        )
-                        if es_from_cache:
+                        if es_result.strip().lower() == pt_text.strip().lower():
+                            self.work_items[idx]['es_source'] = SOURCE_ATTENTION
+                        elif es_from_cache:
+                            self.work_items[idx]['es_source'] = SOURCE_CACHE
                             stats.from_cache += 1
                         else:
+                            self.work_items[idx]['es_source'] = SOURCE_TRANSLATED
                             stats.translated += 1
                     else:
                         self.work_items[idx]['es_source'] = SOURCE_FAILED
@@ -1236,9 +1397,20 @@ class ZendeskController:
         if self.backup_folder:
             backup_file = self._create_backup(items, log_signal)
             result['backup_file'] = backup_file
+        else:
+            log_signal.emit(
+                "Warning: No backup folder configured. "
+                "Changes will be applied without a backup. "
+                "Set a backup path in the Config tab to enable backups."
+            )
 
-        log_signal.emit("Refreshing Dynamic Content list...")
-        self._refresh_dc_cache()
+        if self.dc_map:
+            log_signal.emit(
+                f"Using cached DC items ({len(self.dc_map)} items)"
+            )
+        else:
+            log_signal.emit("Fetching Dynamic Content list...")
+            self._refresh_dc_cache()
 
         sorted_items = self._sort_items_for_apply(items)
 
@@ -1613,6 +1785,18 @@ class ZendeskController:
 
             elif obj_type == 'sla_policy':
                 self.api.update_sla_policy(obj_id, {field_name: placeholder})
+
+            elif obj_type == 'category':
+                self.api.update_hc_category(obj_id, {field_name: placeholder})
+
+            elif obj_type == 'section':
+                self.api.update_hc_section(obj_id, {field_name: placeholder})
+
+            elif obj_type == 'article':
+                self.api.update_hc_article(obj_id, {field_name: placeholder})
+
+            else:
+                raise Exception(f"Unsupported object type: {obj_type}")
 
         except Exception as e:
             log_signal.emit(f"    Warning: Could not update {obj_type}: {e}")

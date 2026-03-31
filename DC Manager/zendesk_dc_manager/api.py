@@ -35,6 +35,7 @@ class ZendeskAPI:
         self._stop_lock = threading.Lock()
         self._last_request_time = 0
         self._request_lock = threading.Lock()
+        self.page_callback = None  # Set externally to receive (count) after each page
 
     def stop(self):
         """Signal to stop current operation."""
@@ -111,12 +112,15 @@ class ZendeskAPI:
                     raise ValueError(f"Unknown method: {method}")
 
                 if response.status_code == 429:
-                    retry_after = int(
-                        response.headers.get(
-                            'Retry-After',
-                            API_CONFIG.RATE_LIMIT_MAX_WAIT
+                    try:
+                        retry_after = int(
+                            response.headers.get(
+                                'Retry-After',
+                                API_CONFIG.RATE_LIMIT_MAX_WAIT
+                            )
                         )
-                    )
+                    except (ValueError, TypeError):
+                        retry_after = API_CONFIG.RATE_LIMIT_MAX_WAIT
                     logger.warning(
                         f"Rate limited. Waiting {retry_after} seconds..."
                     )
@@ -157,6 +161,8 @@ class ZendeskAPI:
         """Paginate through API results."""
         results = []
         params = params or {}
+        if 'per_page' not in params:
+            params['per_page'] = 100
         page_count = 0
 
         while url and page_count < API_CONFIG.MAX_PAGINATION_PAGES:
@@ -172,6 +178,9 @@ class ZendeskAPI:
                 results.extend(data[key])
             elif isinstance(data, list):
                 results.extend(data)
+
+            if self.page_callback:
+                self.page_callback(len(results))
 
             url = (data.get('next_page') or '') if isinstance(data, dict) else ''
             params = {}
@@ -845,3 +854,21 @@ class ZendeskAPI:
                 )
                 return []
             raise
+
+    def update_hc_category(self, category_id: int, data: Dict) -> Dict:
+        """Update a Help Center category."""
+        url = f"{self.hc_base_url}/categories/{category_id}"
+        response = self._request('PUT', url, data={'category': data})
+        return response.json().get('category', {})
+
+    def update_hc_section(self, section_id: int, data: Dict) -> Dict:
+        """Update a Help Center section."""
+        url = f"{self.hc_base_url}/sections/{section_id}"
+        response = self._request('PUT', url, data={'section': data})
+        return response.json().get('section', {})
+
+    def update_hc_article(self, article_id: int, data: Dict) -> Dict:
+        """Update a Help Center article."""
+        url = f"{self.hc_base_url}/articles/{article_id}"
+        response = self._request('PUT', url, data={'article': data})
+        return response.json().get('article', {})

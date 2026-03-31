@@ -5,7 +5,7 @@ Main UI module for Zendesk DC Manager.
 import threading
 from typing import Optional, List, Dict, Any
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QStackedWidget, QLabel, QPushButton, QLineEdit,
@@ -409,7 +409,39 @@ class ZendeskWizard(QMainWindow):
         self.chk_save_credentials.setChecked(True)
         options_layout.addWidget(self.chk_save_credentials)
 
-        page.add_widget(options_group)
+        profile_group = QGroupBox("Profile")
+        profile_layout = QVBoxLayout(profile_group)
+        profile_layout.setSpacing(12)
+
+        profile_note = QLabel(
+            "ℹ️ Save/load credentials and settings to switch between instances."
+        )
+        profile_note.setWordWrap(True)
+        profile_note.setStyleSheet(
+            "background-color: #EFF6FF; color: #1E40AF; "
+            "padding: 12px; border-radius: 6px; font-size: 12px;"
+        )
+        profile_layout.addWidget(profile_note)
+
+        profile_btn_row = QHBoxLayout()
+        self.btn_save_profile = QPushButton("Save Profile")
+        self.btn_save_profile.setMinimumWidth(130)
+        self.btn_save_profile.clicked.connect(self._save_profile)
+        profile_btn_row.addWidget(self.btn_save_profile)
+
+        self.btn_load_profile = QPushButton("Load Profile")
+        self.btn_load_profile.setMinimumWidth(130)
+        self.btn_load_profile.clicked.connect(self._load_profile)
+        profile_btn_row.addWidget(self.btn_load_profile)
+
+        profile_btn_row.addStretch()
+        profile_layout.addLayout(profile_btn_row)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(12)
+        bottom_row.addWidget(options_group, stretch=1)
+        bottom_row.addWidget(profile_group, stretch=1)
+        page.add_layout(bottom_row)
         page.add_stretch()
 
         btn_row = QHBoxLayout()
@@ -454,43 +486,45 @@ class ZendeskWizard(QMainWindow):
             "Select what Zendesk objects to scan for Dynamic Content."
         )
 
+        def _scan_row(*widgets):
+            """Left-aligned HBoxLayout with fixed spacing between items."""
+            row = QHBoxLayout()
+            row.setSpacing(0)
+            for i, w in enumerate(widgets):
+                row.addWidget(w)
+                if i < len(widgets) - 1:
+                    row.addSpacing(24)
+            row.addStretch(1)
+            return row
+
         ticket_group = QGroupBox("Ticket Fields && Forms")
-        ticket_layout = QGridLayout(ticket_group)
-        ticket_layout.setSpacing(10)
-        ticket_layout.setColumnStretch(0, 1)
-        ticket_layout.setColumnStretch(1, 1)
-        ticket_layout.setColumnStretch(2, 1)
+        ticket_layout = QVBoxLayout(ticket_group)
+        ticket_layout.setContentsMargins(8, 8, 8, 8)
+        ticket_layout.setSpacing(8)
 
         self.chk_scan_fields = QCheckBox("Ticket Fields")
         self.chk_scan_fields.setChecked(True)
         self.chk_scan_forms = QCheckBox("Ticket Forms")
         self.chk_scan_forms.setChecked(True)
 
-        ticket_layout.addWidget(self.chk_scan_fields, 0, 0)
-        ticket_layout.addWidget(self.chk_scan_forms, 0, 1)
-
-        page.add_widget(ticket_group)
+        ticket_layout.addLayout(
+            _scan_row(self.chk_scan_fields, self.chk_scan_forms)
+        )
 
         status_group = QGroupBox("Ticket Statuses")
-        status_layout = QGridLayout(status_group)
-        status_layout.setSpacing(10)
-        status_layout.setColumnStretch(0, 1)
-        status_layout.setColumnStretch(1, 1)
-        status_layout.setColumnStretch(2, 1)
+        status_layout = QVBoxLayout(status_group)
+        status_layout.setContentsMargins(8, 8, 8, 8)
+        status_layout.setSpacing(8)
 
         self.chk_scan_custom_statuses = QCheckBox("Custom Statuses")
         self.chk_scan_custom_statuses.setChecked(False)
 
-        status_layout.addWidget(self.chk_scan_custom_statuses, 0, 0)
-
-        page.add_widget(status_group)
+        status_layout.addLayout(_scan_row(self.chk_scan_custom_statuses))
 
         user_org_group = QGroupBox("User && Organization")
-        user_org_layout = QGridLayout(user_org_group)
-        user_org_layout.setSpacing(10)
-        user_org_layout.setColumnStretch(0, 1)
-        user_org_layout.setColumnStretch(1, 1)
-        user_org_layout.setColumnStretch(2, 1)
+        user_org_layout = QVBoxLayout(user_org_group)
+        user_org_layout.setContentsMargins(8, 8, 8, 8)
+        user_org_layout.setSpacing(8)
 
         self.chk_scan_user_fields = QCheckBox("User Fields")
         self.chk_scan_user_fields.setChecked(False)
@@ -499,18 +533,18 @@ class ZendeskWizard(QMainWindow):
         self.chk_scan_groups = QCheckBox("Groups")
         self.chk_scan_groups.setChecked(False)
 
-        user_org_layout.addWidget(self.chk_scan_user_fields, 0, 0)
-        user_org_layout.addWidget(self.chk_scan_org_fields, 0, 1)
-        user_org_layout.addWidget(self.chk_scan_groups, 0, 2)
-
-        page.add_widget(user_org_group)
+        user_org_layout.addLayout(
+            _scan_row(
+                self.chk_scan_user_fields,
+                self.chk_scan_org_fields,
+                self.chk_scan_groups,
+            )
+        )
 
         rules_group = QGroupBox("Business Rules")
-        rules_layout = QGridLayout(rules_group)
-        rules_layout.setSpacing(10)
-        rules_layout.setColumnStretch(0, 1)
-        rules_layout.setColumnStretch(1, 1)
-        rules_layout.setColumnStretch(2, 1)
+        rules_layout = QVBoxLayout(rules_group)
+        rules_layout.setContentsMargins(8, 8, 8, 8)
+        rules_layout.setSpacing(8)
 
         self.chk_scan_macros = QCheckBox("Macros")
         self.chk_scan_macros.setChecked(False)
@@ -523,20 +557,20 @@ class ZendeskWizard(QMainWindow):
         self.chk_scan_sla_policies = QCheckBox("SLA Policies")
         self.chk_scan_sla_policies.setChecked(False)
 
-        rules_layout.addWidget(self.chk_scan_macros, 0, 0)
-        rules_layout.addWidget(self.chk_scan_triggers, 0, 1)
-        rules_layout.addWidget(self.chk_scan_automations, 0, 2)
-        rules_layout.addWidget(self.chk_scan_views, 1, 0)
-        rules_layout.addWidget(self.chk_scan_sla_policies, 1, 1)
-
-        page.add_widget(rules_group)
+        rules_layout.addLayout(
+            _scan_row(
+                self.chk_scan_macros,
+                self.chk_scan_triggers,
+                self.chk_scan_automations,
+                self.chk_scan_views,
+                self.chk_scan_sla_policies,
+            )
+        )
 
         hc_group = QGroupBox("Help Center")
-        hc_layout = QGridLayout(hc_group)
-        hc_layout.setSpacing(10)
-        hc_layout.setColumnStretch(0, 1)
-        hc_layout.setColumnStretch(1, 1)
-        hc_layout.setColumnStretch(2, 1)
+        hc_layout = QVBoxLayout(hc_group)
+        hc_layout.setContentsMargins(8, 8, 8, 8)
+        hc_layout.setSpacing(8)
 
         self.chk_scan_cats = QCheckBox("Categories")
         self.chk_scan_cats.setChecked(False)
@@ -545,14 +579,49 @@ class ZendeskWizard(QMainWindow):
         self.chk_scan_arts = QCheckBox("Articles")
         self.chk_scan_arts.setChecked(False)
 
-        hc_layout.addWidget(self.chk_scan_cats, 0, 0)
-        hc_layout.addWidget(self.chk_scan_sects, 0, 1)
-        hc_layout.addWidget(self.chk_scan_arts, 0, 2)
+        hc_layout.addLayout(
+            _scan_row(
+                self.chk_scan_cats,
+                self.chk_scan_sects,
+                self.chk_scan_arts,
+            )
+        )
 
-        page.add_widget(hc_group)
+        # Arrange groups in a 2-column grid:
+        #   Row 0: [Ticket Fields & Forms]  [Ticket Statuses]
+        #   Row 1: [User & Organization]    [Help Center]
+        #   Row 2: [Business Rules ──────────────────────]
+        groups_grid = QGridLayout()
+        groups_grid.setSpacing(8)
+        groups_grid.setColumnStretch(0, 1)
+        groups_grid.setColumnStretch(1, 1)
+
+        groups_grid.addWidget(ticket_group,   0, 0)
+        groups_grid.addWidget(status_group,   0, 1)
+        groups_grid.addWidget(user_org_group, 1, 0)
+        groups_grid.addWidget(hc_group,       1, 1)
+        groups_grid.addWidget(rules_group,    2, 0, 1, 2)
+
+        page.add_layout(groups_grid)
         page.add_stretch()
 
         btn_row = QHBoxLayout()
+
+        self.chk_refresh_dc = QCheckBox("Refresh DC cache")
+        self.chk_refresh_dc.setChecked(False)
+        self.chk_refresh_dc.setToolTip(
+            "When unchecked: reuse DC items fetched during the previous scan\n"
+            "When checked: re-fetch all DC items from Zendesk before scanning"
+        )
+        self.chk_refresh_dc.setStyleSheet("font-size: 11px;")
+        btn_row.addWidget(self.chk_refresh_dc)
+
+        self.lbl_dc_cache = QLabel("DC: not loaded")
+        self.lbl_dc_cache.setStyleSheet(
+            "font-size: 11px; color: #6B7280;"
+        )
+        btn_row.addWidget(self.lbl_dc_cache)
+
         btn_row.addStretch()
         self.btn_scan = QPushButton("Start Scan")
         self.btn_scan.setMinimumWidth(120)
@@ -581,58 +650,66 @@ class ZendeskWizard(QMainWindow):
             "Review scanned items and run translations"
         )
 
-        # Filter row with all checkboxes including Reserved
-        filter_row1 = QHBoxLayout()
-        filter_row1.setSpacing(12)
+        # Filter rows matching the scan tab categories
+        def _make_filter_chk(label, tooltip=None):
+            chk = QCheckBox(label)
+            chk.setChecked(True)
+            if tooltip:
+                chk.setToolTip(tooltip)
+            chk.stateChanged.connect(self.apply_table_filter)
+            return chk
+
+        self.chk_filter_fields = _make_filter_chk("Ticket Fields")
+        self.chk_filter_forms = _make_filter_chk("Ticket Forms")
+        self.chk_filter_statuses = _make_filter_chk("Custom Statuses")
+        self.chk_filter_user_fields = _make_filter_chk("User Fields")
+        self.chk_filter_org_fields = _make_filter_chk("Org Fields")
+        self.chk_filter_groups = _make_filter_chk("Groups")
+        self.chk_filter_macros = _make_filter_chk("Macros")
+        self.chk_filter_triggers = _make_filter_chk("Triggers")
+        self.chk_filter_automations = _make_filter_chk("Automations")
+        self.chk_filter_views = _make_filter_chk("Views")
+        self.chk_filter_sla = _make_filter_chk("SLA Policies")
+        self.chk_filter_hc_cats = _make_filter_chk("HC Categories")
+        self.chk_filter_hc_sects = _make_filter_chk("HC Sections")
+        self.chk_filter_hc_arts = _make_filter_chk("HC Articles")
+        self.chk_filter_reserved = _make_filter_chk(
+            "System", "Show system/reserved fields"
+        )
 
         filter_label = QLabel("Show:")
         filter_label.setStyleSheet("font-weight: 500;")
-        filter_row1.addWidget(filter_label)
 
-        self.chk_filter_ticket = QCheckBox("Ticket")
-        self.chk_filter_ticket.setChecked(True)
-        self.chk_filter_ticket.stateChanged.connect(self.apply_table_filter)
-        filter_row1.addWidget(self.chk_filter_ticket)
+        # QGridLayout: equal-width columns fill the row naturally.
+        # Column 0 = "Show:" label (fixed), columns 1-8 = checkboxes (equal stretch).
+        filter_grid = QGridLayout()
+        filter_grid.setContentsMargins(0, 0, 0, 0)
+        filter_grid.setHorizontalSpacing(8)
+        filter_grid.setVerticalSpacing(4)
 
-        self.chk_filter_status = QCheckBox("Status")
-        self.chk_filter_status.setChecked(True)
-        self.chk_filter_status.stateChanged.connect(self.apply_table_filter)
-        filter_row1.addWidget(self.chk_filter_status)
+        filter_grid.addWidget(filter_label, 0, 0)
 
-        self.chk_filter_user = QCheckBox("User")
-        self.chk_filter_user.setChecked(True)
-        self.chk_filter_user.stateChanged.connect(self.apply_table_filter)
-        filter_row1.addWidget(self.chk_filter_user)
+        for col, chk in enumerate([
+            self.chk_filter_fields, self.chk_filter_forms,
+            self.chk_filter_statuses, self.chk_filter_user_fields,
+            self.chk_filter_org_fields, self.chk_filter_groups,
+            self.chk_filter_macros, self.chk_filter_triggers,
+        ], start=1):
+            filter_grid.addWidget(chk, 0, col)
 
-        self.chk_filter_org = QCheckBox("Organization")
-        self.chk_filter_org.setChecked(True)
-        self.chk_filter_org.stateChanged.connect(self.apply_table_filter)
-        filter_row1.addWidget(self.chk_filter_org)
+        for col, chk in enumerate([
+            self.chk_filter_automations, self.chk_filter_views,
+            self.chk_filter_sla, self.chk_filter_hc_cats,
+            self.chk_filter_hc_sects, self.chk_filter_hc_arts,
+            self.chk_filter_reserved,
+        ], start=1):
+            filter_grid.addWidget(chk, 1, col)
 
-        self.chk_filter_rules = QCheckBox("Business Rules")
-        self.chk_filter_rules.setChecked(True)
-        self.chk_filter_rules.stateChanged.connect(self.apply_table_filter)
-        filter_row1.addWidget(self.chk_filter_rules)
+        filter_grid.setColumnStretch(0, 0)
+        for col in range(1, 9):
+            filter_grid.setColumnStretch(col, 1)
 
-        self.chk_filter_admin = QCheckBox("Admin")
-        self.chk_filter_admin.setChecked(True)
-        self.chk_filter_admin.stateChanged.connect(self.apply_table_filter)
-        filter_row1.addWidget(self.chk_filter_admin)
-
-        self.chk_filter_hc = QCheckBox("Help Center")
-        self.chk_filter_hc.setChecked(True)
-        self.chk_filter_hc.stateChanged.connect(self.apply_table_filter)
-        filter_row1.addWidget(self.chk_filter_hc)
-
-        self.chk_filter_reserved = QCheckBox("System")
-        self.chk_filter_reserved.setChecked(True)
-        self.chk_filter_reserved.setToolTip("Show system/reserved fields")
-        self.chk_filter_reserved.stateChanged.connect(self.apply_table_filter)
-        filter_row1.addWidget(self.chk_filter_reserved)
-
-        filter_row1.addStretch()
-
-        page.add_layout(filter_row1)
+        page.add_layout(filter_grid)
 
         # Selection buttons row
         filter_row2 = QHBoxLayout()
@@ -653,7 +730,38 @@ class ZendeskWizard(QMainWindow):
         self.btn_invert_selection.clicked.connect(self._invert_selection)
         filter_row2.addWidget(self.btn_invert_selection)
 
-        filter_row2.addStretch()
+        filter_row2.addSpacing(16)
+
+        lbl_search = QLabel("Search / Filter:")
+        lbl_search.setStyleSheet("font-size: 12px; color: #374151; font-weight: 500;")
+        filter_row2.addWidget(lbl_search)
+
+        filter_row2.addSpacing(6)
+
+        self.txt_search_filter = QLineEdit()
+        self.txt_search_filter.setPlaceholderText("Type to filter rows by any text…")
+        self.txt_search_filter.setFixedHeight(30)
+        self.txt_search_filter.setClearButtonEnabled(True)
+        self.txt_search_filter.setStyleSheet("""
+            QLineEdit {
+                border: 1px solid #D1D5DB;
+                border-radius: 6px;
+                padding: 4px 10px;
+                font-size: 12px;
+                background-color: #FFFFFF;
+            }
+            QLineEdit:focus {
+                border-color: #3B82F6;
+            }
+        """)
+        self._search_debounce = QTimer()
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(200)
+        self._search_debounce.timeout.connect(self.apply_table_filter)
+        self.txt_search_filter.textChanged.connect(
+            lambda: self._search_debounce.start()
+        )
+        filter_row2.addWidget(self.txt_search_filter, stretch=1)
 
         page.add_layout(filter_row2)
 
@@ -685,9 +793,9 @@ class ZendeskWizard(QMainWindow):
         summary_row = QHBoxLayout()
         summary_row.setSpacing(12)
 
-        self.lbl_sum_total = QLabel("Total: 0")
-        self.lbl_sum_total.setStyleSheet("font-weight: 600; font-size: 11px;")
-        summary_row.addWidget(self.lbl_sum_total)
+        self.lbl_sum_showing = QLabel("Showing: 0 / 0")
+        self.lbl_sum_showing.setStyleSheet("font-weight: 600; font-size: 11px;")
+        summary_row.addWidget(self.lbl_sum_showing)
 
         self.lbl_sum_selected = QLabel("Selected: 0")
         self.lbl_sum_selected.setStyleSheet(
@@ -881,13 +989,14 @@ class ZendeskWizard(QMainWindow):
         page.add_widget(warning_label)
 
         info_label = QLabel(
-            "Select items in the Preview tab, then click "
+            "ℹ️ Select items in the Preview tab, then click "
             "'Apply Selected Changes' to apply them to Zendesk. "
             "System items are automatically excluded."
         )
         info_label.setWordWrap(True)
         info_label.setStyleSheet(
-            "color: #6B7280; font-size: 13px; padding: 8px 0;"
+            "background-color: #EFF6FF; color: #1E40AF; "
+            "padding: 12px; border-radius: 6px; font-size: 12px;"
         )
         page.add_widget(info_label)
 
@@ -1049,8 +1158,6 @@ class ZendeskWizard(QMainWindow):
         self.chk_protect_acronyms.setChecked(True)
         trans_layout.addWidget(self.chk_protect_acronyms, 2, 0, 1, 2)
 
-        page.add_widget(trans_group)
-
         cache_group = QGroupBox("Cache Settings")
         cache_layout = QGridLayout(cache_group)
         cache_layout.setColumnStretch(1, 1)
@@ -1062,8 +1169,12 @@ class ZendeskWizard(QMainWindow):
         self.spn_cache_days.setValue(30)
         cache_layout.addWidget(self.spn_cache_days, 0, 1)
 
-        cache_info = QLabel("Translations are cached to reduce API calls.")
-        cache_info.setStyleSheet("color: #6B7280; font-size: 12px;")
+        cache_info = QLabel("ℹ️ Translations are cached to reduce API calls.")
+        cache_info.setWordWrap(True)
+        cache_info.setStyleSheet(
+            "background-color: #EFF6FF; color: #1E40AF; "
+            "padding: 12px; border-radius: 6px; font-size: 12px;"
+        )
         cache_layout.addWidget(cache_info, 1, 0, 1, 2)
 
         self.btn_clear_cache = QPushButton("Clear Translation Cache")
@@ -1071,24 +1182,13 @@ class ZendeskWizard(QMainWindow):
         self.btn_clear_cache.clicked.connect(self.run_clear_cache)
         cache_layout.addWidget(self.btn_clear_cache, 2, 0, 1, 2)
 
-        page.add_widget(cache_group)
+        # Translation and Cache groups side by side
+        settings_row = QHBoxLayout()
+        settings_row.setSpacing(12)
+        settings_row.addWidget(trans_group, stretch=2)
+        settings_row.addWidget(cache_group, stretch=1)
+        page.add_layout(settings_row)
 
-        profile_group = QGroupBox("Profile")
-        profile_layout = QHBoxLayout(profile_group)
-
-        self.btn_save_profile = QPushButton("Save Profile")
-        self.btn_save_profile.setMinimumWidth(130)
-        self.btn_save_profile.clicked.connect(self._save_profile)
-        profile_layout.addWidget(self.btn_save_profile)
-
-        self.btn_load_profile = QPushButton("Load Profile")
-        self.btn_load_profile.setMinimumWidth(130)
-        self.btn_load_profile.clicked.connect(self._load_profile)
-        profile_layout.addWidget(self.btn_load_profile)
-
-        profile_layout.addStretch()
-
-        page.add_widget(profile_group)
         page.add_stretch()
 
         self.stack.addWidget(page)
@@ -1217,7 +1317,6 @@ class ZendeskWizard(QMainWindow):
         pending = stats.get('items_pending', 0)
         selected = stats.get('selected_count', 0)
 
-        self.lbl_sum_total.setText(f"Total: {total}")
         self.lbl_sum_from_dc.setText(f"From DC: {from_dc}")
         self.lbl_sum_translated.setText(f"Translated: {translated}")
         self.lbl_sum_failed.setText(f"Failed: {failed}")
@@ -1332,9 +1431,6 @@ class ZendeskWizard(QMainWindow):
         self.lbl_will_translate.setStyleSheet(style)
 
     def run_connect(self):
-        if self.state_manager.is_busy:
-            return
-
         subdomain = self.txt_subdomain.text().strip()
         email = self.txt_email.text().strip()
         token = self.txt_token.text().strip()
@@ -1344,6 +1440,9 @@ class ZendeskWizard(QMainWindow):
             QMessageBox.warning(
                 self, "Warning", "Please fill in all credential fields."
             )
+            return
+
+        if not self.state_manager.try_transition(AppState.CONNECTING):
             return
 
         if self.chk_save_credentials.isChecked():
@@ -1371,7 +1470,6 @@ class ZendeskWizard(QMainWindow):
             )
             self.worker.log.connect(self.log_msg)
             self.worker.result.connect(self.on_connect_finished)
-            self.worker.finished.connect(self.status_bar.reset_ui)
             self.worker.start()
 
     def on_connect_finished(self, success: bool, result: object):
@@ -1391,9 +1489,6 @@ class ZendeskWizard(QMainWindow):
             QMessageBox.critical(self, "Connection Error", str(result))
 
     def run_scan(self):
-        if self.state_manager.is_busy:
-            return
-
         config = {
             'fields': self.chk_scan_fields.isChecked(),
             'forms': self.chk_scan_forms.isChecked(),
@@ -1408,13 +1503,18 @@ class ZendeskWizard(QMainWindow):
             'groups': self.chk_scan_groups.isChecked(),
             'cats': self.chk_scan_cats.isChecked(),
             'sects': self.chk_scan_sects.isChecked(),
-            'arts': self.chk_scan_arts.isChecked()
+            'arts': self.chk_scan_arts.isChecked(),
+            'refresh_dc': self.chk_refresh_dc.isChecked(),
         }
+        self._last_scan_config = config
 
-        if not any(config.values()):
+        if not any(v for k, v in config.items() if k != 'refresh_dc'):
             QMessageBox.warning(
                 self, "Warning", "Select at least one item type to scan."
             )
+            return
+
+        if not self.state_manager.try_transition(AppState.SCANNING):
             return
 
         self._cleanup_worker()
@@ -1427,12 +1527,11 @@ class ZendeskWizard(QMainWindow):
             )
             self.worker.progress.connect(
                 lambda c, t, m: self.status_bar.show_progress(
-                    c, t, "Scanning...", m
+                    c, t, m, ""
                 )
             )
             self.worker.log.connect(self.log_msg)
             self.worker.result.connect(self.on_scan_finished)
-            self.worker.finished.connect(self.status_bar.reset_ui)
             self.worker.start()
 
     def on_scan_finished(self, success: bool, result: object):
@@ -1447,10 +1546,15 @@ class ZendeskWizard(QMainWindow):
 
         self._has_scan_data = True
         self._update_sidebar_state()
+        self._sync_preview_filters_to_scan()
+
+        dc_count = len(self.controller.dc_map)
+        self.lbl_dc_cache.setText(f"DC: {dc_count} items cached")
+        self.lbl_dc_cache.setStyleSheet("font-size: 11px; color: #059669;")
+        self.chk_refresh_dc.setChecked(False)
 
         self.status_bar.finish("Scan Complete", True)
         stats: Dict[str, int] = result  # type: ignore[assignment]
-        self._work_items_cache = self.controller.work_items
 
         self.log_msg("=" * 50)
         self.log_msg("SCAN RESULTS")
@@ -1477,22 +1581,65 @@ class ZendeskWizard(QMainWindow):
         self.populate_preview(preserve_selection=False)
         self.goto(2)
 
+    def _sync_preview_filters_to_scan(self):
+        """Set Show checkboxes to match what was selected in the Scan tab."""
+        cfg = getattr(self, '_last_scan_config', {})
+        _chks = [
+            self.chk_filter_fields, self.chk_filter_forms,
+            self.chk_filter_statuses, self.chk_filter_user_fields,
+            self.chk_filter_org_fields, self.chk_filter_groups,
+            self.chk_filter_macros, self.chk_filter_triggers,
+            self.chk_filter_automations, self.chk_filter_views,
+            self.chk_filter_sla, self.chk_filter_hc_cats,
+            self.chk_filter_hc_sects, self.chk_filter_hc_arts,
+        ]
+        for chk in _chks:
+            chk.blockSignals(True)
+        self.chk_filter_fields.setChecked(cfg.get('fields', False))
+        self.chk_filter_forms.setChecked(cfg.get('forms', False))
+        self.chk_filter_statuses.setChecked(cfg.get('custom_statuses', False))
+        self.chk_filter_user_fields.setChecked(cfg.get('user_fields', False))
+        self.chk_filter_org_fields.setChecked(cfg.get('org_fields', False))
+        self.chk_filter_groups.setChecked(cfg.get('groups', False))
+        self.chk_filter_macros.setChecked(cfg.get('macros', False))
+        self.chk_filter_triggers.setChecked(cfg.get('triggers', False))
+        self.chk_filter_automations.setChecked(cfg.get('automations', False))
+        self.chk_filter_views.setChecked(cfg.get('views', False))
+        self.chk_filter_sla.setChecked(cfg.get('sla_policies', False))
+        self.chk_filter_hc_cats.setChecked(cfg.get('cats', False))
+        self.chk_filter_hc_sects.setChecked(cfg.get('sects', False))
+        self.chk_filter_hc_arts.setChecked(cfg.get('arts', False))
+        for chk in _chks:
+            chk.blockSignals(False)
+        # System items are always shown regardless of scan selection
+
     def populate_preview(self, preserve_selection: bool = True):
-        self._work_items_cache = self.controller.work_items
+        self._work_items_cache = list(self.controller.work_items)
+        if not preserve_selection:
+            self.txt_search_filter.blockSignals(True)
+            self.txt_search_filter.clear()
+            self.txt_search_filter.blockSignals(False)
 
         selection_state = None
         if preserve_selection:
             selection_state = self.preview_table.get_selection_state()
 
         self.preview_table.set_filter_settings(
-            self.chk_filter_ticket.isChecked(),
-            self.chk_filter_status.isChecked(),
-            self.chk_filter_user.isChecked(),
-            self.chk_filter_org.isChecked(),
-            self.chk_filter_rules.isChecked(),
-            self.chk_filter_admin.isChecked(),
-            self.chk_filter_hc.isChecked(),
-            self.chk_filter_reserved.isChecked()
+            show_fields=self.chk_filter_fields.isChecked(),
+            show_forms=self.chk_filter_forms.isChecked(),
+            show_statuses=self.chk_filter_statuses.isChecked(),
+            show_user_fields=self.chk_filter_user_fields.isChecked(),
+            show_org_fields=self.chk_filter_org_fields.isChecked(),
+            show_groups=self.chk_filter_groups.isChecked(),
+            show_macros=self.chk_filter_macros.isChecked(),
+            show_triggers=self.chk_filter_triggers.isChecked(),
+            show_automations=self.chk_filter_automations.isChecked(),
+            show_views=self.chk_filter_views.isChecked(),
+            show_sla=self.chk_filter_sla.isChecked(),
+            show_hc_cats=self.chk_filter_hc_cats.isChecked(),
+            show_hc_sects=self.chk_filter_hc_sects.isChecked(),
+            show_hc_arts=self.chk_filter_hc_arts.isChecked(),
+            show_reserved=self.chk_filter_reserved.isChecked(),
         )
 
         self.preview_table.start_async_load(
@@ -1504,14 +1651,28 @@ class ZendeskWizard(QMainWindow):
 
     def apply_table_filter(self):
         self.preview_table.apply_filters(
-            show_ticket=self.chk_filter_ticket.isChecked(),
-            show_status=self.chk_filter_status.isChecked(),
-            show_user=self.chk_filter_user.isChecked(),
-            show_org=self.chk_filter_org.isChecked(),
-            show_rules=self.chk_filter_rules.isChecked(),
-            show_admin=self.chk_filter_admin.isChecked(),
-            show_hc=self.chk_filter_hc.isChecked(),
-            show_reserved=self.chk_filter_reserved.isChecked()
+            show_fields=self.chk_filter_fields.isChecked(),
+            show_forms=self.chk_filter_forms.isChecked(),
+            show_statuses=self.chk_filter_statuses.isChecked(),
+            show_user_fields=self.chk_filter_user_fields.isChecked(),
+            show_org_fields=self.chk_filter_org_fields.isChecked(),
+            show_groups=self.chk_filter_groups.isChecked(),
+            show_macros=self.chk_filter_macros.isChecked(),
+            show_triggers=self.chk_filter_triggers.isChecked(),
+            show_automations=self.chk_filter_automations.isChecked(),
+            show_views=self.chk_filter_views.isChecked(),
+            show_sla=self.chk_filter_sla.isChecked(),
+            show_hc_cats=self.chk_filter_hc_cats.isChecked(),
+            show_hc_sects=self.chk_filter_hc_sects.isChecked(),
+            show_hc_arts=self.chk_filter_hc_arts.isChecked(),
+            show_reserved=self.chk_filter_reserved.isChecked(),
+            search_text=self.txt_search_filter.text(),
+        )
+
+        visible_count = len(self.preview_table.get_visible_data_indices())
+        total_count = len(self.preview_table._data)
+        self.lbl_sum_showing.setText(
+            f"Showing: {visible_count} / {total_count}"
         )
 
         selected_count = self.preview_table.get_selected_count()
@@ -1541,9 +1702,6 @@ class ZendeskWizard(QMainWindow):
         return selected_rows
 
     def run_translation(self):
-        if self.state_manager.is_busy:
-            return
-
         selected_indices = self._get_visible_selected_indices()
 
         if not selected_indices:
@@ -1555,6 +1713,9 @@ class ZendeskWizard(QMainWindow):
                 "• 'Select All' button to select all visible items\n"
                 "• 'Invert Selection' to toggle selection"
             )
+            return
+
+        if not self.state_manager.try_transition(AppState.TRANSLATING):
             return
 
         self.controller.set_translation_config(
@@ -1583,7 +1744,6 @@ class ZendeskWizard(QMainWindow):
             )
             self.worker.log.connect(self.log_msg)
             self.worker.result.connect(self.on_translation_finished)
-            self.worker.finished.connect(self.status_bar.reset_ui)
             self.worker.start()
 
     def on_translation_finished(self, success: bool, result: object):
@@ -1651,9 +1811,6 @@ class ZendeskWizard(QMainWindow):
         return selected_items
 
     def run_apply(self):
-        if self.state_manager.is_busy:
-            return
-
         selected = self._get_selected_items()
         non_system_selected = [
             i for i in selected if not i.get('is_system', False)
@@ -1697,6 +1854,9 @@ class ZendeskWizard(QMainWindow):
         if reply == QMessageBox.StandardButton.No:
             return
 
+        if not self.state_manager.try_transition(AppState.APPLYING):
+            return
+
         self._cleanup_worker()
         self.status_bar.show_progress(0, 0, "Applying...", "")
         self.lock_ui(True)
@@ -1714,7 +1874,6 @@ class ZendeskWizard(QMainWindow):
             )
             self.worker.log.connect(self.log_msg)
             self.worker.result.connect(self.on_apply_finished)
-            self.worker.finished.connect(self.status_bar.reset_ui)
             self.worker.start()
 
     def on_apply_finished(self, success: bool, result: object):
@@ -1758,14 +1917,14 @@ class ZendeskWizard(QMainWindow):
                 )
 
     def run_load_backup(self):
-        if self.state_manager.is_busy:
-            return
-
         filepath = self.txt_rollback_file.text().strip()
         if not filepath:
             QMessageBox.warning(
                 self, "Warning", "Please select a backup file first."
             )
+            return
+
+        if not self.state_manager.try_transition(AppState.LOADING_BACKUP):
             return
 
         self._cleanup_worker()
@@ -1783,7 +1942,6 @@ class ZendeskWizard(QMainWindow):
             )
             self.worker.log.connect(self.log_msg)
             self.worker.result.connect(self.on_load_backup_finished)
-            self.worker.finished.connect(self.status_bar.reset_ui)
             self.worker.start()
 
     def on_load_backup_finished(self, success: bool, result: object):
@@ -1820,9 +1978,6 @@ class ZendeskWizard(QMainWindow):
         self.btn_rollback.setEnabled(True)
 
     def run_rollback(self):
-        if self.state_manager.is_busy:
-            return
-
         if not self._pending_backup_items:
             QMessageBox.warning(
                 self, "Warning", "Please load a backup file first."
@@ -1836,6 +1991,9 @@ class ZendeskWizard(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.No:
+            return
+
+        if not self.state_manager.try_transition(AppState.ROLLING_BACK):
             return
 
         self._cleanup_worker()
@@ -1855,7 +2013,6 @@ class ZendeskWizard(QMainWindow):
             )
             self.worker.log.connect(self.log_msg)
             self.worker.result.connect(self.on_rollback_finished)
-            self.worker.finished.connect(self.status_bar.reset_ui)
             self.worker.start()
 
     def on_rollback_finished(self, success: bool, result: object):

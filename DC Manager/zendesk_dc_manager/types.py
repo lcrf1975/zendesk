@@ -6,52 +6,9 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Optional, Dict, Any, Callable, TypeVar, Generic
+from typing import Optional, Callable
 
 from zendesk_dc_manager.config import logger
-
-
-T = TypeVar('T')
-
-
-@dataclass
-class Result(Generic[T]):
-    """A Result type for operations that can fail."""
-
-    success: bool
-    value: Optional[T] = None
-    error: Optional[str] = None
-    error_code: Optional[int] = None
-    details: Optional[Dict[str, Any]] = None
-
-    @classmethod
-    def ok(cls, value: T) -> 'Result[T]':
-        return cls(success=True, value=value)
-
-    @classmethod
-    def fail(
-        cls,
-        error: str,
-        error_code: Optional[int] = None,
-        details: Optional[Dict[str, Any]] = None
-    ) -> 'Result[T]':
-        return cls(
-            success=False,
-            error=error,
-            error_code=error_code,
-            details=details
-        )
-
-    def __bool__(self) -> bool:
-        return self.success
-
-    def unwrap(self) -> T:
-        if not self.success:
-            raise ValueError(f"Unwrap called on failed Result: {self.error}")
-        return self.value
-
-    def unwrap_or(self, default: T) -> T:
-        return self.value if self.success else default
 
 
 @dataclass
@@ -66,9 +23,12 @@ class TranslationStats:
 
     @property
     def success_rate(self) -> float:
-        if self.total == 0:
+        # Each item generates 2 operations (EN + ES), so use actual operations
+        # attempted rather than item count to keep the rate in 0-100% range.
+        operations = self.translated + self.from_cache + self.failed
+        if operations == 0:
             return 0.0
-        return (self.translated + self.from_cache) / self.total * 100
+        return (self.translated + self.from_cache) / operations * 100
 
     def __str__(self) -> str:
         return (

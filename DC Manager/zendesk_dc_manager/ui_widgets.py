@@ -19,9 +19,10 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QProgressBar, QTableWidget,
     QTableWidgetItem, QHeaderView, QCheckBox,
-    QAbstractItemView, QTextEdit,
+    QAbstractItemView, QTextEdit, QStyledItemDelegate,
+    QStyleOptionViewItem, QStyle,
 )
-from PyQt6.QtGui import QBrush
+from PyQt6.QtGui import QBrush, QFontMetrics
 
 from zendesk_dc_manager.config import (
     UI_CONFIG,
@@ -427,6 +428,67 @@ class TableContainer(QWidget):
 # ==============================================================================
 
 
+class _CellColorDelegate(QStyledItemDelegate):
+    """Forces Qt to honour setBackground()/setForeground() on table cells
+    even when a QSS ::item rule is active (which normally suppresses them)."""
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        bg = index.data(Qt.ItemDataRole.BackgroundRole)
+        if bg is not None:
+            option.backgroundBrush = (
+                bg if isinstance(bg, QBrush) else QBrush(bg)
+            )
+        fg = index.data(Qt.ItemDataRole.ForegroundRole)
+        if fg is not None:
+            palette = option.palette
+            palette.setBrush(
+                palette.ColorRole.Text,
+                fg if isinstance(fg, QBrush) else QBrush(fg),
+            )
+            option.palette = palette
+
+    def paint(self, painter, option, index):
+        bg = index.data(Qt.ItemDataRole.BackgroundRole)
+        if bg is None:
+            super().paint(painter, option, index)
+            return
+
+        # Qt6's QStyleSheetStyle repaints the background during drawControl
+        # even after initStyleOption sets backgroundBrush, overriding it with
+        # QSS/alternating colors. We bypass this by drawing manually.
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+
+        painter.save()
+
+        is_selected = bool(opt.state & QStyle.StateFlag.State_Selected)
+
+        if is_selected:
+            painter.fillRect(opt.rect, opt.palette.highlight())
+            text_color = opt.palette.highlightedText().color()
+        else:
+            brush = bg if isinstance(bg, QBrush) else QBrush(bg)
+            painter.fillRect(opt.rect, brush)
+            text_color = opt.palette.text().color()
+
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ''
+        if text:
+            painter.setPen(text_color)
+            text_rect = opt.rect.adjusted(8, 0, -8, 0)
+            fm = QFontMetrics(opt.font)
+            elided = fm.elidedText(
+                text, Qt.TextElideMode.ElideRight, text_rect.width()
+            )
+            painter.drawText(
+                text_rect,
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                elided,
+            )
+
+        painter.restore()
+
+
 class PreviewTableWidget(QTableWidget):
     """Table widget for preview data with async loading."""
 
@@ -437,8 +499,8 @@ class PreviewTableWidget(QTableWidget):
 
     COLUMNS = [
         ("select", "✓", 40),
-        ("type", "Type", 120),
         ("context", "Context", 100),
+        ("type", "Type", 120),
         ("obj_id", "ID", 80),
         ("placeholder", "Placeholder", 180),
         ("pt", "Portuguese (PT)", 200),
@@ -457,15 +519,23 @@ class PreviewTableWidget(QTableWidget):
         self._batch_size = UI_CONFIG.TABLE_BATCH_SIZE
 
         self._selection_state: Dict[int, bool] = {}
+        self._search_cache: Dict[int, str] = {}  # data_index -> lowercased searchable text
 
         # Filter settings
-        self._filter_ticket = True
-        self._filter_status = True
-        self._filter_user = True
-        self._filter_org = True
-        self._filter_rules = True
-        self._filter_admin = True
-        self._filter_hc = True
+        self._filter_fields = True
+        self._filter_forms = True
+        self._filter_statuses = True
+        self._filter_user_fields = True
+        self._filter_org_fields = True
+        self._filter_groups = True
+        self._filter_macros = True
+        self._filter_triggers = True
+        self._filter_automations = True
+        self._filter_views = True
+        self._filter_sla = True
+        self._filter_hc_cats = True
+        self._filter_hc_sects = True
+        self._filter_hc_arts = True
         self._filter_reserved = True
 
         self._setup_table()
@@ -495,25 +565,42 @@ class PreviewTableWidget(QTableWidget):
 
         self.cellChanged.connect(self._on_cell_changed)
 
+        # Apply delegate so setBackground()/setForeground() show through QSS
+        self.setItemDelegate(_CellColorDelegate(self))
+
     def set_filter_settings(
         self,
-        show_ticket: bool,
-        show_status: bool,
-        show_user: bool,
-        show_org: bool,
-        show_rules: bool,
-        show_admin: bool,
-        show_hc: bool,
-        show_reserved: bool = True
+        show_fields: bool = True,
+        show_forms: bool = True,
+        show_statuses: bool = True,
+        show_user_fields: bool = True,
+        show_org_fields: bool = True,
+        show_groups: bool = True,
+        show_macros: bool = True,
+        show_triggers: bool = True,
+        show_automations: bool = True,
+        show_views: bool = True,
+        show_sla: bool = True,
+        show_hc_cats: bool = True,
+        show_hc_sects: bool = True,
+        show_hc_arts: bool = True,
+        show_reserved: bool = True,
     ):
         """Set filter settings before loading data."""
-        self._filter_ticket = show_ticket
-        self._filter_status = show_status
-        self._filter_user = show_user
-        self._filter_org = show_org
-        self._filter_rules = show_rules
-        self._filter_admin = show_admin
-        self._filter_hc = show_hc
+        self._filter_fields = show_fields
+        self._filter_forms = show_forms
+        self._filter_statuses = show_statuses
+        self._filter_user_fields = show_user_fields
+        self._filter_org_fields = show_org_fields
+        self._filter_groups = show_groups
+        self._filter_macros = show_macros
+        self._filter_triggers = show_triggers
+        self._filter_automations = show_automations
+        self._filter_views = show_views
+        self._filter_sla = show_sla
+        self._filter_hc_cats = show_hc_cats
+        self._filter_hc_sects = show_hc_sects
+        self._filter_hc_arts = show_hc_arts
         self._filter_reserved = show_reserved
 
     def start_async_load(
@@ -536,6 +623,7 @@ class PreviewTableWidget(QTableWidget):
         else:
             self._selection_state = {}
 
+        self._search_cache = {}
         self.setRowCount(0)
         self.blockSignals(True)
 
@@ -558,6 +646,18 @@ class PreviewTableWidget(QTableWidget):
             self._add_row(i, self._data[i])
 
         self._load_index = end_index
+
+    def _build_search_string(self, item: Dict[str, Any]) -> str:
+        """Build a lowercased searchable string for a work item."""
+        return '|'.join([
+            item.get('context', ''),
+            item.get('type_display', item.get('type', '')),
+            str(item.get('obj_id', '')),
+            item.get('dc_placeholder', '') or '',
+            item.get('pt', '') or '',
+            item.get('en', '') or '',
+            item.get('es', '') or '',
+        ]).lower()
 
     def _add_row(self, data_index: int, item: Dict[str, Any]):
         """Add a single row to the table."""
@@ -585,19 +685,19 @@ class PreviewTableWidget(QTableWidget):
         chk_layout.addWidget(chk)
         self.setCellWidget(row, 0, chk_widget)
 
-        # Column 1: Type
-        type_item = QTableWidgetItem(
-            item.get('type_display', item.get('type', ''))
-        )
-        type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        self.setItem(row, 1, type_item)
-
-        # Column 2: Context
+        # Column 1: Context
         context_item = QTableWidgetItem(item.get('context', ''))
         context_item.setFlags(
             context_item.flags() & ~Qt.ItemFlag.ItemIsEditable
         )
-        self.setItem(row, 2, context_item)
+        self.setItem(row, 1, context_item)
+
+        # Column 2: Type
+        type_item = QTableWidgetItem(
+            item.get('type_display', item.get('type', ''))
+        )
+        type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.setItem(row, 2, type_item)
 
         # Column 3: ID
         id_item = QTableWidgetItem(str(item.get('obj_id', '')))
@@ -676,8 +776,10 @@ class PreviewTableWidget(QTableWidget):
         self.setItem(row, 8, action_item)
 
         # Store data index in type column for reference
-        if self.item(row, 1):
-            self.item(row, 1).setData(Qt.ItemDataRole.UserRole, data_index)
+        if self.item(row, 2):
+            self.item(row, 2).setData(Qt.ItemDataRole.UserRole, data_index)
+
+        self._search_cache[data_index] = self._build_search_string(item)
 
     def _finish_loading(self):
         """Finish the loading process."""
@@ -696,6 +798,7 @@ class PreviewTableWidget(QTableWidget):
         if self._load_timer:
             self._load_timer.stop()
             self._load_timer = None
+        self.blockSignals(False)
 
     def _on_cell_changed(self, row: int, column: int):
         """Handle cell edit."""
@@ -716,15 +819,19 @@ class PreviewTableWidget(QTableWidget):
         item.setBackground(QBrush(_get_source_color(SOURCE_MANUAL)))
         item.setForeground(QBrush(_get_text_color(SOURCE_MANUAL)))
 
-        type_item = self.item(row, 1)
+        type_item = self.item(row, 2)
         if type_item:
             data_index = type_item.data(Qt.ItemDataRole.UserRole)
             if data_index is not None:
                 self.cell_edited.emit(data_index, field, value, SOURCE_MANUAL)
+                if data_index < len(self._data):
+                    self._search_cache[data_index] = self._build_search_string(
+                        self._data[data_index]
+                    )
 
     def _on_selection_changed(self, row: int, state: int):
         """Handle selection checkbox change."""
-        type_item = self.item(row, 1)
+        type_item = self.item(row, 2)
         if type_item:
             data_index = type_item.data(Qt.ItemDataRole.UserRole)
             if data_index is not None:
@@ -747,11 +854,12 @@ class PreviewTableWidget(QTableWidget):
             'selected_count': self.get_selected_count(),
         }
 
-        # Define which sources count as "translated"
+        # Define which sources count as "translated" (have a result)
         translated_sources = frozenset({
             SOURCE_TRANSLATED,
             SOURCE_CACHE,
             SOURCE_MANUAL,
+            SOURCE_ATTENTION,
         })
 
         for item in self._data:
@@ -763,7 +871,6 @@ class PreviewTableWidget(QTableWidget):
                 stats['items_reserved'] += 1
                 continue
 
-            # Get the item's original source and translation sources
             source = item.get('source', SOURCE_NEW)
             en_source = item.get('en_source', SOURCE_NEW)
             es_source = item.get('es_source', SOURCE_NEW)
@@ -774,8 +881,8 @@ class PreviewTableWidget(QTableWidget):
             # Check for any translation failures
             elif en_source == SOURCE_FAILED or es_source == SOURCE_FAILED:
                 stats['items_failed'] += 1
-            # Check if item needs attention
-            elif source == SOURCE_ATTENTION:
+            # Check if any translation result is identical to PT (needs review)
+            elif en_source == SOURCE_ATTENTION or es_source == SOURCE_ATTENTION:
                 stats['items_attention'] += 1
             # Check if both EN and ES are translated
             elif (en_source in translated_sources and
@@ -789,27 +896,64 @@ class PreviewTableWidget(QTableWidget):
 
     def apply_filters(
         self,
-        show_ticket: bool,
-        show_status: bool,
-        show_user: bool,
-        show_org: bool,
-        show_rules: bool,
-        show_admin: bool,
-        show_hc: bool,
-        show_reserved: bool = True
+        show_fields: bool = True,
+        show_forms: bool = True,
+        show_statuses: bool = True,
+        show_user_fields: bool = True,
+        show_org_fields: bool = True,
+        show_groups: bool = True,
+        show_macros: bool = True,
+        show_triggers: bool = True,
+        show_automations: bool = True,
+        show_views: bool = True,
+        show_sla: bool = True,
+        show_hc_cats: bool = True,
+        show_hc_sects: bool = True,
+        show_hc_arts: bool = True,
+        show_reserved: bool = True,
+        search_text: str = '',
     ):
-        """Apply visibility filters to rows."""
-        self._filter_ticket = show_ticket
-        self._filter_status = show_status
-        self._filter_user = show_user
-        self._filter_org = show_org
-        self._filter_rules = show_rules
-        self._filter_admin = show_admin
-        self._filter_hc = show_hc
+        """Apply visibility filters to rows based on object type and search text."""
+        self._filter_fields = show_fields
+        self._filter_forms = show_forms
+        self._filter_statuses = show_statuses
+        self._filter_user_fields = show_user_fields
+        self._filter_org_fields = show_org_fields
+        self._filter_groups = show_groups
+        self._filter_macros = show_macros
+        self._filter_triggers = show_triggers
+        self._filter_automations = show_automations
+        self._filter_views = show_views
+        self._filter_sla = show_sla
+        self._filter_hc_cats = show_hc_cats
+        self._filter_hc_sects = show_hc_sects
+        self._filter_hc_arts = show_hc_arts
         self._filter_reserved = show_reserved
 
+        TYPE_VISIBLE = {
+            'ticket_field': show_fields,
+            'ticket_field_option': show_fields,
+            'ticket_form': show_forms,
+            'custom_status': show_statuses,
+            'user_field': show_user_fields,
+            'user_field_option': show_user_fields,
+            'organization_field': show_org_fields,
+            'organization_field_option': show_org_fields,
+            'group': show_groups,
+            'macro': show_macros,
+            'trigger': show_triggers,
+            'automation': show_automations,
+            'view': show_views,
+            'sla_policy': show_sla,
+            'category': show_hc_cats,
+            'section': show_hc_sects,
+            'article': show_hc_arts,
+        }
+
+        search = search_text.strip().lower()
+
         for row in range(self.rowCount()):
-            type_item = self.item(row, 1)
+            type_item = self.item(row, 2)
             if not type_item:
                 continue
 
@@ -818,38 +962,25 @@ class PreviewTableWidget(QTableWidget):
                 continue
 
             item = self._data[data_index]
-            context = item.get('context', '')
             is_reserved = (
                 item.get('is_reserved', False) or item.get('is_system', False)
             )
 
-            # Check reserved filter first
             if is_reserved:
-                if not show_reserved:
-                    self.setRowHidden(row, True)
-                    continue
-                else:
-                    self.setRowHidden(row, False)
-                    continue
+                type_visible = show_reserved
+            else:
+                obj_type = item.get('type', '')
+                type_visible = TYPE_VISIBLE.get(obj_type, True)
 
-            # Non-reserved items: apply context filters
-            visible = True
-            if context == 'Ticket' and not show_ticket:
-                visible = False
-            elif context == 'Status' and not show_status:
-                visible = False
-            elif context == 'User' and not show_user:
-                visible = False
-            elif context == 'Organization' and not show_org:
-                visible = False
-            elif context == 'Business Rules' and not show_rules:
-                visible = False
-            elif context == 'Admin' and not show_admin:
-                visible = False
-            elif context == 'Help Center' and not show_hc:
-                visible = False
+            if not type_visible:
+                self.setRowHidden(row, True)
+                continue
 
-            self.setRowHidden(row, not visible)
+            if search:
+                searchable = self._search_cache.get(data_index, '')
+                self.setRowHidden(row, search not in searchable)
+            else:
+                self.setRowHidden(row, False)
 
     def get_selected_count(self) -> int:
         """Get count of selected items."""
@@ -871,7 +1002,7 @@ class PreviewTableWidget(QTableWidget):
             if self.isRowHidden(row):
                 continue
 
-            type_item = self.item(row, 1)
+            type_item = self.item(row, 2)
             if type_item:
                 data_index = type_item.data(Qt.ItemDataRole.UserRole)
                 if data_index is not None:
@@ -896,7 +1027,7 @@ class PreviewTableWidget(QTableWidget):
             if self.isRowHidden(row):
                 continue
 
-            type_item = self.item(row, 1)
+            type_item = self.item(row, 2)
             if type_item:
                 data_index = type_item.data(Qt.ItemDataRole.UserRole)
                 if data_index is not None:
@@ -918,7 +1049,7 @@ class PreviewTableWidget(QTableWidget):
             if self.isRowHidden(row):
                 continue
 
-            type_item = self.item(row, 1)
+            type_item = self.item(row, 2)
             if type_item:
                 data_index = type_item.data(Qt.ItemDataRole.UserRole)
                 if data_index is not None:
@@ -1010,7 +1141,7 @@ class PreviewTableWidget(QTableWidget):
     def get_row_for_data_index(self, data_index: int) -> int:
         """Get the table row for a given data index."""
         for row in range(self.rowCount()):
-            type_item = self.item(row, 1)
+            type_item = self.item(row, 2)
             if type_item:
                 row_data_index = type_item.data(Qt.ItemDataRole.UserRole)
                 if row_data_index == data_index:
@@ -1025,13 +1156,14 @@ class PreviewTableWidget(QTableWidget):
             self.update_row_text(row, item)
             self.update_row_colors(row, item)
             self.blockSignals(False)
+            self._search_cache[data_index] = self._build_search_string(item)
 
     def get_visible_data_indices(self) -> List[int]:
         """Get list of visible (not hidden) data indices."""
         indices = []
         for row in range(self.rowCount()):
             if not self.isRowHidden(row):
-                type_item = self.item(row, 1)
+                type_item = self.item(row, 2)
                 if type_item:
                     data_index = type_item.data(Qt.ItemDataRole.UserRole)
                     if data_index is not None:
