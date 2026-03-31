@@ -5,6 +5,11 @@ body {
   color: #2f3941;
 }
 
+/* Extra bottom clearance so the last form field is never flush against the iframe edge */
+#form-view {
+  padding-bottom: 24px;
+}
+
 h2, h3 {
   margin-top: 0;
 }
@@ -94,13 +99,93 @@ input[type="checkbox"] {
   background-color: #6d28d9;
 }
 
+.btn-teal {
+  background-color: #028484;
+  color: white;
+  border: none;
+}
+
+.btn-teal:hover {
+  background-color: #016969;
+}
+
 /* Consistent disabled state for every button variant */
 .btn:disabled,
 .btn-secondary:disabled,
 .btn-orange:disabled,
-.btn-purple:disabled {
+.btn-purple:disabled,
+.btn-teal:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Find Duplicates modal */
+#find-duplicates-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(47, 57, 65, 0.6);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#find-duplicates-modal {
+  background: white;
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 960px;
+  width: 95%;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+
+.fd-record-link { color: #1f73b7; text-decoration: none; font-weight: 600; }
+.fd-record-link:hover { text-decoration: underline; cursor: pointer; }
+
+/* Find Duplicates — section headers */
+.fd-section-header {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 4px;
+  margin: 0 0 8px 0;
+}
+
+.fd-section-exact {
+  background: #e8f0fe;
+  color: #1a56db;
+  border: 1px solid #c3d0f5;
+}
+
+.fd-section-similar {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #f59e0b;
+  margin-top: 16px;
+}
+
+/* Similar-name groups get an amber left border to signal lower confidence */
+.related-section.fd-similar-group {
+  border-left: 3px solid #f59e0b;
+}
+
+.related-section.fd-similar-group > summary {
+  background: #fffdf5;
+}
+
+.related-section.fd-similar-group[open] > summary {
+  border-bottom: 1px solid #f59e0b;
+}
+
+/* Inline diff highlight — characters in a duplicate name that differ from the reference */
+mark.fd-diff {
+  background-color: #fff3cd;
+  color: #7c4400;
+  border-radius: 2px;
+  padding: 0 1px;
+  font-style: normal;
 }
 
 /* Reverse Lookup modal */
@@ -203,6 +288,7 @@ input[type="checkbox"] {
 .toolbar-actions {
   display: flex;
   gap: 8px;
+  margin-left: auto;
 }
 
 .toolbar-controls {

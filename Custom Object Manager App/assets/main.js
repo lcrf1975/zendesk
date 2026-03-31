@@ -114,7 +114,8 @@ const TRANSLATIONS = {
     'reverseLookup.stop':         'Stop',
     'reverseLookup.stopping':     'Stopping...',
     'reverseLookup.stopped':      'Scan stopped — results shown may be incomplete.',
-    'app.title': 'Custom Object Record Manager (Build A35)',
+    'reverseLookup.scopeNoFilter': 'Filtered records (apply a search or filter first)',
+    'app.title': 'Custom Object Record Manager (Build 202603-47)',
     'table.dashboard': 'Dashboard',
     'table.searchLoading': 'Available after all records are loaded',
     'export.loadingWarning': 'This feature will be available after all records are loaded.',
@@ -132,6 +133,36 @@ const TRANSLATIONS = {
     'usage.possibleMatchesHint': 'Rules where a condition value contains this record\'s name. Verify manually.',
     'usage.possibleCondRef': 'name found in condition value',
     'delete.possibleMatches': 'possible matches (by name)',
+    'table.findDuplicates': 'Find Duplicates',
+    'findDuplicates.title': 'Find Duplicate Records',
+    'findDuplicates.description': 'Finds records with identical or similar names (case-insensitive; spaces, underscores, and hyphens are treated as equivalent).',
+    'findDuplicates.diffHint': 'Highlighted characters show differences between records in each group.',
+    'findDuplicates.noResults': 'No duplicate or similar names found among all loaded records.',
+    'findDuplicates.found': '{n} group(s) with duplicate or similar names — {total} records affected',
+    'findDuplicates.groupCount': '{n} records',
+    'findDuplicates.selectAll': 'Select all in group',
+    'findDuplicates.noneSelected': 'Select records to delete',
+    'findDuplicates.selectedCount': '{n} record(s) selected',
+    'findDuplicates.deleteSelected': 'Delete Selected',
+    'findDuplicates.deleteSelectedN': 'Delete Selected ({n})',
+    'findDuplicates.confirmTitle': 'Delete {n} record(s)?',
+    'findDuplicates.deleteWarning': 'This cannot be undone. Use Edit → Usage & Impact to check for linked data before deleting.',
+    'findDuplicates.confirmDeleteBtn': 'Confirm Delete ({n})',
+    'findDuplicates.deleting': 'Deleting {done} of {total}...',
+    'findDuplicates.deleteSuccess': '{n} record(s) deleted successfully.',
+    'findDuplicates.deleteErrors': '{n} record(s) could not be deleted',
+    'findDuplicates.scanning': 'Checking dependencies {done} of {total}...',
+    'findDuplicates.scanComplete': 'Scan complete — review before confirming',
+    'findDuplicates.dependencies': 'Dependencies',
+    'findDuplicates.noDeps': 'No dependencies',
+    'findDuplicates.hasLinked': '{n} linked item(s)',
+    'findDuplicates.hasRules': '{n} rule condition(s)',
+    'findDuplicates.hasPossible': '~{n} possible match(es)',
+    'findDuplicates.exactTitle': 'Exact Duplicates',
+    'findDuplicates.exactHint': 'Records that are identical or differ only in case, separators, or diacritics.',
+    'findDuplicates.similarTitle': 'Similar Names',
+    'findDuplicates.similarHint': 'Records with similar names — different word order, or missing/extra words like articles and prepositions. Verify manually before deleting.',
+    'findDuplicates.noExact': 'No exact duplicates found.',
   },
 
   'pt-BR': {
@@ -218,6 +249,7 @@ const TRANSLATIONS = {
     'reverseLookup.stop':         'Parar',
     'reverseLookup.stopping':     'Parando...',
     'reverseLookup.stopped':      'Varredura interrompida — resultados exibidos podem estar incompletos.',
+    'reverseLookup.scopeNoFilter': 'Registros filtrados (aplique uma pesquisa ou filtro primeiro)',
     'app.title': 'Gerenciador de Registros de Objetos Customizados',
     'table.dashboard': 'Painel',
     'table.searchLoading': 'Disponível após o carregamento de todos os registros',
@@ -236,6 +268,36 @@ const TRANSLATIONS = {
     'usage.possibleMatchesHint': 'Regras com valor de condição contendo o nome deste registro. Verifique manualmente.',
     'usage.possibleCondRef': 'nome encontrado no valor da condição',
     'delete.possibleMatches': 'correspondências possíveis (por nome)',
+    'table.findDuplicates': 'Encontrar Duplicatas',
+    'findDuplicates.title': 'Encontrar Registros Duplicados',
+    'findDuplicates.description': 'Encontra registros com nomes idênticos ou similares (sem distinção de maiúsculas/minúsculas; espaços, underscores e hífens são equivalentes).',
+    'findDuplicates.diffHint': 'Caracteres destacados mostram diferenças entre os registros do grupo.',
+    'findDuplicates.noResults': 'Nenhum nome duplicado ou similar encontrado nos registros carregados.',
+    'findDuplicates.found': '{n} grupo(s) com nomes duplicados ou similares — {total} registros afetados',
+    'findDuplicates.groupCount': '{n} registros',
+    'findDuplicates.selectAll': 'Selecionar todos no grupo',
+    'findDuplicates.noneSelected': 'Selecione registros para excluir',
+    'findDuplicates.selectedCount': '{n} registro(s) selecionado(s)',
+    'findDuplicates.deleteSelected': 'Excluir Selecionados',
+    'findDuplicates.deleteSelectedN': 'Excluir Selecionados ({n})',
+    'findDuplicates.confirmTitle': 'Excluir {n} registro(s)?',
+    'findDuplicates.deleteWarning': 'Esta ação não pode ser desfeita. Use Editar → Uso e Impacto para verificar dados vinculados antes de excluir.',
+    'findDuplicates.confirmDeleteBtn': 'Confirmar Exclusão ({n})',
+    'findDuplicates.deleting': 'Excluindo {done} de {total}...',
+    'findDuplicates.deleteSuccess': '{n} registro(s) excluído(s) com sucesso.',
+    'findDuplicates.deleteErrors': '{n} registro(s) não puderam ser excluídos',
+    'findDuplicates.scanning': 'Verificando dependências {done} de {total}...',
+    'findDuplicates.scanComplete': 'Verificação concluída — revise antes de confirmar',
+    'findDuplicates.dependencies': 'Dependências',
+    'findDuplicates.noDeps': 'Sem dependências',
+    'findDuplicates.hasLinked': '{n} item(ns) vinculado(s)',
+    'findDuplicates.hasRules': '{n} condição(ões) de regra',
+    'findDuplicates.hasPossible': '~{n} correspondência(s) possível(is)',
+    'findDuplicates.exactTitle': 'Duplicatas Exatas',
+    'findDuplicates.exactHint': 'Registros idênticos ou que diferem apenas em maiúsculas/minúsculas, separadores ou diacríticos.',
+    'findDuplicates.similarTitle': 'Nomes Similares',
+    'findDuplicates.similarHint': 'Registros com nomes similares — ordem diferente ou palavras extras/faltantes como artigos e preposições. Verifique manualmente antes de excluir.',
+    'findDuplicates.noExact': 'Nenhuma duplicata exata encontrada.',
   },
 
   es: {
@@ -322,6 +384,7 @@ const TRANSLATIONS = {
     'reverseLookup.stop':         'Parar',
     'reverseLookup.stopping':     'Deteniendo...',
     'reverseLookup.stopped':      'Búsqueda detenida — los resultados mostrados pueden estar incompletos.',
+    'reverseLookup.scopeNoFilter': 'Registros filtrados (aplique una búsqueda o filtro primero)',
     'app.title': 'Administrador de Registros de Objetos Personalizados',
     'table.dashboard': 'Panel',
     'table.searchLoading': 'Disponible después de cargar todos los registros',
@@ -340,6 +403,36 @@ const TRANSLATIONS = {
     'usage.possibleMatchesHint': 'Reglas con valor de condición que contiene el nombre de este registro. Verifique manualmente.',
     'usage.possibleCondRef': 'nombre encontrado en el valor de condición',
     'delete.possibleMatches': 'coincidencias posibles (por nombre)',
+    'table.findDuplicates': 'Buscar Duplicados',
+    'findDuplicates.title': 'Buscar Registros Duplicados',
+    'findDuplicates.description': 'Encuentra registros con nombres idénticos o similares (sin distinción de mayúsculas/minúsculas; espacios, guiones bajos y guiones son equivalentes).',
+    'findDuplicates.diffHint': 'Los caracteres resaltados muestran diferencias entre los registros de cada grupo.',
+    'findDuplicates.noResults': 'No se encontraron nombres duplicados o similares entre los registros cargados.',
+    'findDuplicates.found': '{n} grupo(s) con nombres duplicados o similares — {total} registros afectados',
+    'findDuplicates.groupCount': '{n} registros',
+    'findDuplicates.selectAll': 'Seleccionar todos en el grupo',
+    'findDuplicates.noneSelected': 'Seleccione registros para eliminar',
+    'findDuplicates.selectedCount': '{n} registro(s) seleccionado(s)',
+    'findDuplicates.deleteSelected': 'Eliminar Seleccionados',
+    'findDuplicates.deleteSelectedN': 'Eliminar Seleccionados ({n})',
+    'findDuplicates.confirmTitle': '¿Eliminar {n} registro(s)?',
+    'findDuplicates.deleteWarning': 'Esta acción no se puede deshacer. Use Editar → Uso e Impacto para verificar datos vinculados antes de eliminar.',
+    'findDuplicates.confirmDeleteBtn': 'Confirmar Eliminación ({n})',
+    'findDuplicates.deleting': 'Eliminando {done} de {total}...',
+    'findDuplicates.deleteSuccess': '{n} registro(s) eliminado(s) correctamente.',
+    'findDuplicates.deleteErrors': '{n} registro(s) no pudieron ser eliminados',
+    'findDuplicates.scanning': 'Verificando dependencias {done} de {total}...',
+    'findDuplicates.scanComplete': 'Verificación completa — revise antes de confirmar',
+    'findDuplicates.dependencies': 'Dependencias',
+    'findDuplicates.noDeps': 'Sin dependencias',
+    'findDuplicates.hasLinked': '{n} elemento(s) vinculado(s)',
+    'findDuplicates.hasRules': '{n} condición(es) de regla',
+    'findDuplicates.hasPossible': '~{n} coincidencia(s) posible(s)',
+    'findDuplicates.exactTitle': 'Duplicados Exactos',
+    'findDuplicates.exactHint': 'Registros idénticos o que difieren solo en mayúsculas/minúsculas, separadores o diacríticos.',
+    'findDuplicates.similarTitle': 'Nombres Similares',
+    'findDuplicates.similarHint': 'Registros con nombres similares — diferente orden de palabras o palabras extras/faltantes como artículos y preposiciones. Verifique manualmente antes de eliminar.',
+    'findDuplicates.noExact': 'No se encontraron duplicados exactos.',
   },
 };
 
@@ -410,6 +503,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('btn-reverse-lookup').addEventListener('click', () => {
     if (!tabulatorTable) return;
     showReverseLookupModal();
+  });
+  document.getElementById('btn-find-duplicates').addEventListener('click', () => {
+    if (!tabulatorTable) return;
+    showFindDuplicatesModal();
   });
 
   // Advanced Filter toggle
@@ -579,6 +676,11 @@ function setLoadingUIState(loading) {
   if (exportBtn) {
     exportBtn.disabled = loading;
     exportBtn.title = loading ? t('export.loadingWarning') : '';
+  }
+  const findDupBtn = document.getElementById('btn-find-duplicates');
+  if (findDupBtn) {
+    findDupBtn.disabled = loading;
+    findDupBtn.title = loading ? t('export.loadingWarning') : '';
   }
 }
 
@@ -1300,6 +1402,95 @@ function normalizeForMatch(str) {
     .trim();
 }
 
+// Common words to ignore when computing similarity keys (pt-BR / es / en)
+const DUPLICATE_STOPWORDS = new Set([
+  'de','da','do','dos','das','em','na','no','nas','nos','para','com','por','ou', // pt
+  'del','el','la','los','las','en','al','con','un','una','y',                    // es
+  'the','of','in','and','or','an','for','to','by','on','with',                   // en
+]);
+
+// Normalises a string for duplicate-name detection:
+// case-insensitive, strips diacritics, treats _ - . as spaces, collapses whitespace.
+// "Ar Condicionado" === "Ar_Condicionado" === "ar-condicionado" after this.
+function normalizeForDuplicate(str) {
+  if (!str) return '';
+  return String(str)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')   // strip diacritics
+    .replace(/[_\-.]/g, ' ')           // treat _ - . as spaces
+    .replace(/[^a-z0-9\s]/g, '')       // strip remaining special chars
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Normalises for similarity matching: removes stopwords and sorts tokens alphabetically so
+// word-order and missing articles/prepositions don't matter.
+// "Gestão de Terceiros" === "Gestão Terceiros" === "Terceiros Gestão" after this.
+// Uses its own base normalization (not normalizeForDuplicate) so that abbreviations like
+// "D&O" split into separate tokens ("d" + "o") instead of merging into the stopword "do".
+// Returns '' when fewer than 2 meaningful tokens remain (avoids trivial false positives).
+function normalizeForSimilar(str) {
+  const base = String(str)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')  // strip diacritics
+    .replace(/[&+]/g, ' ')            // split abbreviations like D&O into separate tokens
+    .replace(/[_\-.]/g, ' ')          // treat _ - . as spaces
+    .replace(/[^a-z0-9\s]/g, '')      // strip remaining special chars
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const tokens = base
+    .split(' ')
+    .filter(t => t.length > 0 && !DUPLICATE_STOPWORDS.has(t)) // no min-length: keep A,B,C,1,2…
+    .sort();
+  return tokens.length >= 2 ? tokens.join(' ') : '';
+}
+
+// Returns HTML for `target` with characters highlighted where they differ from `reference`.
+// Uses case-insensitive LCS for alignment; highlights exact-char mismatches and insertions.
+function diffHighlight(reference, target) {
+  if (!reference || reference === target) return escapeHtml(target);
+  const a = reference, b = target;
+  const m = a.length, n = b.length;
+  if (m * n > 40000) return escapeHtml(target); // guard for very long strings
+
+  // Build LCS table (case-insensitive for alignment)
+  const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i-1].toLowerCase() === b[j-1].toLowerCase()
+        ? dp[i-1][j-1] + 1
+        : Math.max(dp[i-1][j], dp[i][j-1]);
+    }
+  }
+
+  // Traceback: collect chars from b, marking those that differ from reference
+  const parts = [];
+  let i = m, j = n;
+  while (j > 0) {
+    if (i > 0 && a[i-1].toLowerCase() === b[j-1].toLowerCase()) {
+      parts.unshift({ ch: b[j-1], d: a[i-1] !== b[j-1] }); // highlight case mismatches
+      i--; j--;
+    } else if (i > 0 && dp[i-1][j] >= dp[i][j-1]) {
+      i--;
+    } else {
+      parts.unshift({ ch: b[j-1], d: true }); // insertion in b (e.g. underscore, extra char)
+      j--;
+    }
+  }
+
+  // Render with grouped <mark> spans for consecutive diffs
+  let html = '', inMark = false;
+  for (const p of parts) {
+    if ( p.d && !inMark) { html += '<mark class="fd-diff">'; inMark = true; }
+    if (!p.d &&  inMark) { html += '</mark>';                inMark = false; }
+    html += escapeHtml(p.ch);
+  }
+  return inMark ? html + '</mark>' : html;
+}
+
 // Returns true if any condition value contains the normalised record name.
 // Requires name to be at least 3 chars to avoid trivial false positives.
 function checkConditionsForName(conditions, normalizedName) {
@@ -1357,7 +1548,11 @@ async function scanRuleReferences(recordId, ticketFieldIds, recordName, onAdvanc
       .catch(e => { console.warn('Could not load triggers', e); return []; })
       .then(items => {
         items.forEach(item => {
-          const conds = [...(item.conditions?.all || []), ...(item.conditions?.any || [])];
+          const conds = [
+            ...(item.conditions?.all || []),
+            ...(item.conditions?.any || []),
+            ...(item.actions         || []), // actions can set lookup fields to a CO record
+          ];
           classify(conds, 'triggers', 'possibleTriggers', item);
         });
         onAdvance(t('delete.scanTriggers'));
@@ -1367,7 +1562,11 @@ async function scanRuleReferences(recordId, ticketFieldIds, recordName, onAdvanc
       .catch(e => { console.warn('Could not load automations', e); return []; })
       .then(items => {
         items.forEach(item => {
-          const conds = [...(item.conditions?.all || []), ...(item.conditions?.any || [])];
+          const conds = [
+            ...(item.conditions?.all || []),
+            ...(item.conditions?.any || []),
+            ...(item.actions         || []), // actions can set lookup fields to a CO record
+          ];
           classify(conds, 'automations', 'possibleAutomations', item);
         });
         onAdvance(t('delete.scanAutomations'));
@@ -2190,11 +2389,21 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
 
     if (selectedTypes.includes('triggers'))
       add('/api/v2/triggers', 'triggers', 'rules.triggers', id => getRuleUrl('triggers', id),
-          item => [...(item.conditions?.all || []), ...(item.conditions?.any || [])]);
+          // Scan conditions AND actions — actions can set lookup fields to a CO record ID
+          item => [
+            ...(item.conditions?.all || []),
+            ...(item.conditions?.any || []),
+            ...(item.actions         || []),
+          ]);
 
     if (selectedTypes.includes('automations'))
       add('/api/v2/automations', 'automations', 'rules.automations', id => getRuleUrl('automations', id),
-          item => [...(item.conditions?.all || []), ...(item.conditions?.any || [])]);
+          // Scan conditions AND actions — same reason as triggers above
+          item => [
+            ...(item.conditions?.all || []),
+            ...(item.conditions?.any || []),
+            ...(item.actions         || []),
+          ]);
 
     if (selectedTypes.includes('views'))
       add('/api/v2/views', 'views', 'rules.views', id => getRuleUrl('views', id),
@@ -2368,12 +2577,15 @@ function showReverseLookupModal() {
     const estimatedReqs = Math.ceil(totalRecords / 5); // 5 records per batch
     const activeCount   = (rowNumMap && rowNumMap.size > 0) ? rowNumMap.size : totalRecords;
     const hasFilter     = activeCount < totalRecords;
-    const scopeHtml     = hasFilter ? `
+    const scopeHtml     = `
       <div style="margin-top:12px; border-top:1px solid #e9ebed; padding-top:12px;">
         <p style="font-weight:600; font-size:13px; margin:0 0 8px 0;">${t('reverseLookup.scope')}</p>
         <label class="lookup-type-label"><input type="radio" name="rl-scope" value="all" id="rl-scope-all" checked> ${t('reverseLookup.scopeAll', { n: totalRecords })}</label>
-        <label class="lookup-type-label"><input type="radio" name="rl-scope" value="filtered" id="rl-scope-filtered"> ${t('reverseLookup.scopeFiltered', { n: activeCount })}</label>
-      </div>` : '';
+        <label class="lookup-type-label" style="${!hasFilter ? 'opacity:0.45;' : ''}">
+          <input type="radio" name="rl-scope" value="filtered" id="rl-scope-filtered" ${!hasFilter ? 'disabled title="' + t('reverseLookup.scopeNoFilter') + '"' : ''}>
+          ${hasFilter ? t('reverseLookup.scopeFiltered', { n: activeCount }) : t('reverseLookup.scopeNoFilter')}
+        </label>
+      </div>`;
 
     modal.innerHTML = `
       <h3 style="margin:0 0 8px 0; font-size:16px;">${t('reverseLookup.title')}</h3>
@@ -2401,8 +2613,8 @@ function showReverseLookupModal() {
         <button id="rl-btn-run" class="btn">${t('reverseLookup.run')}</button>
       </div>`;
 
-    // Show/hide and update the text-field performance warning whenever a text type checkbox changes.
-    // The estimate multiplies by the number of checked types so the count stays accurate.
+    // Show/hide and update the text-field performance warning whenever a text type checkbox
+    // or the scope radio changes. Re-reads the scope each time so the count is always accurate.
     const textCheckIds = ['rl-include-tickets', 'rl-include-users', 'rl-include-orgs'];
     const updateTextWarning = () => {
       const checkedCount = textCheckIds.filter(id => document.getElementById(id)?.checked).length;
@@ -2411,12 +2623,16 @@ function showReverseLookupModal() {
       if (checkedCount === 0) {
         warningEl.style.display = 'none';
       } else {
-        const totalReqs = estimatedReqs * checkedCount;
-        warningEl.textContent  = t('reverseLookup.textFieldWarning', { n: totalReqs });
+        const useFiltered = document.getElementById('rl-scope-filtered')?.checked ?? false;
+        const scopeCount  = useFiltered ? activeCount : totalRecords;
+        const reqs        = Math.ceil(scopeCount / 5) * checkedCount;
+        warningEl.textContent  = t('reverseLookup.textFieldWarning', { n: reqs });
         warningEl.style.display = 'block';
       }
     };
     textCheckIds.forEach(id => document.getElementById(id)?.addEventListener('change', updateTextWarning));
+    // Also update the warning when the scope radio changes
+    ['rl-scope-all', 'rl-scope-filtered'].forEach(id => document.getElementById(id)?.addEventListener('change', updateTextWarning));
 
     document.getElementById('rl-btn-cancel').onclick = () => { overlay.style.display = 'none'; };
     document.getElementById('rl-btn-run').onclick = () => {
@@ -2505,6 +2721,298 @@ function buildAndDownloadCSV(allColumns) {
 
 function csvEscape(val) {
   return `"${String(val).replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`;
+}
+
+// -------------------------------------------------------
+// FIND DUPLICATES
+// -------------------------------------------------------
+
+function showFindDuplicatesModal() {
+  if (!tabulatorTable) return;
+  const overlay = document.getElementById('find-duplicates-overlay');
+  const modal   = document.getElementById('find-duplicates-modal');
+
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.style.display = 'none'; };
+
+  // ── helpers ─────────────────────────────────────────
+
+  function computeDuplicates() {
+    const allRecords = tabulatorTable.getData();
+
+    // Pass 1 — exact duplicates (same normalizeForDuplicate key)
+    const exactMap    = new Map();
+    const recExactKey = new Map(); // recId → exact key (or undefined for singletons)
+    for (const rec of allRecords) {
+      const key = normalizeForDuplicate(rec.name || '');
+      if (!key) continue;
+      if (!exactMap.has(key)) exactMap.set(key, []);
+      exactMap.get(key).push(rec);
+      recExactKey.set(rec.id, key);
+    }
+    const exactDuplicates = [...exactMap.entries()]
+      .filter(([, r]) => r.length >= 2)
+      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+
+    // Pass 2 — similar names (same normalizeForSimilar key, spans ≥2 distinct exact identities)
+    const simMap = new Map();
+    for (const rec of allRecords) {
+      const key = normalizeForSimilar(rec.name || '');
+      if (!key) continue;
+      if (!simMap.has(key)) simMap.set(key, []);
+      simMap.get(key).push(rec);
+    }
+    const similarDuplicates = [...simMap.entries()]
+      .filter(([, recs]) => {
+        if (recs.length < 2) return false;
+        const eKeys = new Set(recs.map(r => recExactKey.get(r.id) || `__${r.id}`));
+        return eKeys.size >= 2; // at least two distinct "identities" → not already grouped
+      })
+      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+
+    return { exactDuplicates, similarDuplicates };
+  }
+
+  function buildGroupsHtml(duplicates, startIndex = 0, isSimilar = false) {
+    return duplicates.map(([, recs], gi) => {
+      const groupIdx = startIndex + gi;
+      const refName  = recs[0].name || '';
+      const itemsHtml = recs.map((r, ri) => {
+        // First record: diff against the second so it also shows its own differences.
+        // Other records: diff against the first (reference).
+        const nameHtml = ri === 0
+          ? diffHighlight(recs[1].name || String(recs[1].id), r.name || String(r.id))
+          : diffHighlight(refName, r.name || String(r.id));
+        return `<li style="display:flex; align-items:center; gap:8px; padding:7px 0; border-bottom:1px solid #f0f2f4;">
+          <input type="checkbox" class="fd-check" data-id="${escapeHtml(String(r.id))}" data-name="${escapeHtml(r.name || '')}" data-group="${groupIdx}" style="width:auto; flex-shrink:0; cursor:pointer;">
+          <a class="fd-record-link" data-fd-record-id="${escapeHtml(String(r.id))}" href="#" style="flex:1; font-size:13px;">${nameHtml}</a>
+          <span class="badge-id" style="flex-shrink:0;">${escapeHtml(String(r.id))}</span>
+        </li>`;
+      }).join('');
+      const cls = isSimilar ? 'related-section fd-similar-group' : 'related-section';
+      return `<details class="${cls}" open>
+        <summary>
+          <input type="checkbox" class="fd-group-check" data-group="${groupIdx}" style="width:auto; margin:0 6px 0 0; flex-shrink:0; cursor:pointer;" title="${t('findDuplicates.selectAll')}">
+          <span>${escapeHtml(refName || String(recs[0].id))}</span>
+          <span class="section-meta">${t('findDuplicates.groupCount', { n: recs.length })}</span>
+          <span class="section-toggle">&#9654;</span>
+        </summary>
+        <ul style="list-style:none; padding:0 14px; margin:0;">${itemsHtml}</ul>
+      </details>`;
+    }).join('');
+  }
+
+  // ── phases ───────────────────────────────────────────
+
+  function renderSelection({ exactDuplicates, similarDuplicates }, notice = '') {
+    const hasExact   = exactDuplicates.length > 0;
+    const hasSimilar = similarDuplicates.length > 0;
+
+    if (!hasExact && !hasSimilar) {
+      modal.innerHTML = `
+        <h3 style="margin:0 0 8px 0; font-size:16px;">${t('findDuplicates.title')}</h3>
+        ${notice ? `<div style="padding:10px 14px; background:#edf7ed; border:1px solid #5c9e6e; border-radius:4px; margin-bottom:14px; font-size:13px; color:#1e5631; font-weight:600;">${notice}</div>` : ''}
+        <p style="font-size:14px; color:#2f3941; margin:0;">${t('findDuplicates.noResults')}</p>
+        <div style="display:flex; justify-content:flex-end; padding-top:16px; border-top:1px solid #e9ebed; margin-top:16px;">
+          <button id="fd-close" class="btn btn-secondary">${t('form.cancel')}</button>
+        </div>`;
+      document.getElementById('fd-close').onclick = () => { overlay.style.display = 'none'; };
+      return;
+    }
+
+    const exactTotal = exactDuplicates.reduce((s, [, r]) => s + r.length, 0);
+    const simTotal   = similarDuplicates.reduce((s, [, r]) => s + r.length, 0);
+    const simOffset  = exactDuplicates.length; // group-index offset so similar indices don't clash
+
+    const exactSection = `
+      <div class="fd-section-header fd-section-exact">${t('findDuplicates.exactTitle')}${hasExact ? ` &mdash; ${t('findDuplicates.found', { n: exactDuplicates.length, total: exactTotal })}` : ''}</div>
+      <p style="font-size:11px; color:#68737d; margin:0 0 8px 4px;">${t('findDuplicates.exactHint')}</p>
+      ${hasExact ? buildGroupsHtml(exactDuplicates, 0, false) : `<p style="font-size:13px; color:#68737d; padding:4px;">${t('findDuplicates.noExact')}</p>`}`;
+
+    const similarSection = hasSimilar ? `
+      <div class="fd-section-header fd-section-similar">${t('findDuplicates.similarTitle')} &mdash; ${t('findDuplicates.found', { n: similarDuplicates.length, total: simTotal })}</div>
+      <p style="font-size:11px; color:#92400e; margin:0 0 8px 4px;">${t('findDuplicates.similarHint')}</p>
+      ${buildGroupsHtml(similarDuplicates, simOffset, true)}` : '';
+
+    modal.innerHTML = `
+      <h3 style="margin:0 0 6px 0; font-size:16px;">${t('findDuplicates.title')}</h3>
+      ${notice ? `<div style="padding:10px 14px; background:#edf7ed; border:1px solid #5c9e6e; border-radius:4px; margin-bottom:10px; font-size:13px; color:#1e5631; font-weight:600;">${notice}</div>` : ''}
+      <p style="font-size:12px; color:#028484; margin:0 0 10px 0;">${t('findDuplicates.diffHint')}</p>
+      <div id="fd-groups-container" style="max-height:50vh; overflow-y:auto;">${exactSection}${similarSection}</div>
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; padding-top:14px; border-top:1px solid #e9ebed; margin-top:14px;">
+        <span id="fd-sel-count" style="font-size:13px; color:#68737d;">${t('findDuplicates.noneSelected')}</span>
+        <div style="display:flex; gap:8px;">
+          <button id="fd-close" class="btn btn-secondary">${t('form.cancel')}</button>
+          <button id="fd-delete-btn" class="btn btn-danger" disabled>${t('findDuplicates.deleteSelected')}</button>
+        </div>
+      </div>`;
+
+    document.getElementById('fd-close').onclick = () => { overlay.style.display = 'none'; };
+
+    const updateFooter = () => {
+      const n = modal.querySelectorAll('.fd-check:checked').length;
+      document.getElementById('fd-sel-count').textContent = n > 0
+        ? t('findDuplicates.selectedCount', { n })
+        : t('findDuplicates.noneSelected');
+      const btn = document.getElementById('fd-delete-btn');
+      btn.disabled = n === 0;
+      btn.textContent = n > 0
+        ? t('findDuplicates.deleteSelectedN', { n })
+        : t('findDuplicates.deleteSelected');
+    };
+
+    const container = document.getElementById('fd-groups-container');
+
+    container.addEventListener('change', (e) => {
+      const el = e.target;
+      if (el.classList.contains('fd-group-check')) {
+        const gi = el.getAttribute('data-group');
+        modal.querySelectorAll(`.fd-check[data-group="${gi}"]`).forEach(cb => { cb.checked = el.checked; });
+      } else if (el.classList.contains('fd-check')) {
+        const gi = el.getAttribute('data-group');
+        const all = [...modal.querySelectorAll(`.fd-check[data-group="${gi}"]`)];
+        const hdr = modal.querySelector(`.fd-group-check[data-group="${gi}"]`);
+        if (hdr) {
+          hdr.checked       = all.every(c => c.checked);
+          hdr.indeterminate = !hdr.checked && all.some(c => c.checked);
+        }
+      }
+      updateFooter();
+    });
+
+    container.addEventListener('click', (e) => {
+      // Prevent checkbox inside <summary> from toggling <details>
+      if (e.target.classList.contains('fd-group-check')) { e.stopPropagation(); return; }
+      const link = e.target.closest('[data-fd-record-id]');
+      if (!link) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rid = link.getAttribute('data-fd-record-id');
+      const rowData = tabulatorTable?.getData().find(r => String(r.id) === rid);
+      if (rowData) { overlay.style.display = 'none'; showForm(rowData); }
+    });
+
+    document.getElementById('fd-delete-btn').onclick = () => {
+      const toDelete = [...modal.querySelectorAll('.fd-check:checked')].map(cb => ({
+        id:   cb.getAttribute('data-id'),
+        name: cb.getAttribute('data-name'),
+      }));
+      if (toDelete.length === 0) return;
+      scanAndConfirm(toDelete, { exactDuplicates, similarDuplicates });
+    };
+  }
+
+  // Runs fullReferenceScan on each selected record sequentially, then shows review
+  async function scanAndConfirm(toDelete, duplicates) {
+    let scanned = 0;
+    const total = toDelete.length;
+
+    const showProgress = () => {
+      const pct = Math.round((scanned / total) * 100);
+      modal.innerHTML = `
+        <h3 style="margin:0 0 12px 0; font-size:16px;">${t('findDuplicates.title')}</h3>
+        <p style="font-size:14px; color:#2f3941; margin:0 0 10px 0;">${t('findDuplicates.scanning', { done: scanned, total })}</p>
+        <div class="progress-container">
+          <div class="progress-bar-determinate" style="width:${pct}%"></div>
+        </div>`;
+    };
+
+    showProgress();
+    const results = [];
+    for (const rec of toDelete) {
+      let scan = { totalFound: 0, totalPossible: 0, totalRelationships: 0, totalRules: 0,
+                   ruleCounts: { triggers:0, automations:0, views:0, sla:0 },
+                   possibleCounts: { triggers:0, automations:0, views:0, sla:0 } };
+      try { scan = await fullReferenceScan(rec.id, rec.name, () => {}); }
+      catch (e) { console.warn(`Scan failed for record ${rec.id}`, e); }
+      results.push({ rec, scan });
+      scanned++;
+      showProgress();
+    }
+
+    renderReview(results, duplicates);
+  }
+
+  function renderReview(results, duplicates) {
+    const hasWarnings = results.some(r => r.scan.totalFound > 0);
+
+    const rowsHtml = results.map(({ rec, scan }) => {
+      const ruleTotal = scan.ruleCounts.triggers + scan.ruleCounts.automations +
+                        scan.ruleCounts.views    + scan.ruleCounts.sla;
+      const possTotal = scan.possibleCounts.triggers + scan.possibleCounts.automations +
+                        scan.possibleCounts.views    + scan.possibleCounts.sla;
+      let statusParts = [];
+      if (scan.totalRelationships > 0) statusParts.push(`<span style="color:#cc3340; font-weight:600;">${t('findDuplicates.hasLinked', { n: scan.totalRelationships })}</span>`);
+      if (ruleTotal > 0)               statusParts.push(`<span style="color:#cc3340; font-weight:600;">${t('findDuplicates.hasRules',  { n: ruleTotal })}</span>`);
+      if (statusParts.length === 0 && possTotal > 0) statusParts.push(`<span style="color:#b45309;">${t('findDuplicates.hasPossible', { n: possTotal })}</span>`);
+      if (statusParts.length === 0)    statusParts.push(`<span style="color:#038153;">✓ ${t('findDuplicates.noDeps')}</span>`);
+
+      const rowBg = scan.totalFound > 0 ? 'background:#fff8f8;' : '';
+      return `<tr style="border-bottom:1px solid #e9ebed; ${rowBg}">
+        <td style="padding:8px 16px 8px 0; font-size:13px;">${escapeHtml(rec.name || rec.id)} <span class="badge-id">${escapeHtml(rec.id)}</span></td>
+        <td style="padding:8px 0; font-size:12px; white-space:nowrap;">${statusParts.join('&nbsp;·&nbsp;')}</td>
+      </tr>`;
+    }).join('');
+
+    modal.innerHTML = `
+      <h3 style="margin:0 0 10px 0; font-size:16px;">${t('findDuplicates.title')}</h3>
+      ${hasWarnings ? `<div style="padding:10px 14px; background:#fff0ee; border:1px solid #cc3340; border-radius:4px; margin-bottom:12px; font-size:13px; color:#cc3340;">${t('delete.warningBody')}</div>` : ''}
+      <p style="font-size:13px; font-weight:600; color:#2f3941; margin:0 0 10px 0;">${t('findDuplicates.scanComplete')}</p>
+      <div style="overflow-x:auto;">
+        <table style="width:100%; border-collapse:collapse; margin-bottom:4px;">
+          <thead><tr style="border-bottom:2px solid #e9ebed;">
+            <th style="text-align:left; padding:6px 16px 6px 0; font-size:12px; color:#68737d; font-weight:600;">${t('col.name')}</th>
+            <th style="text-align:left; padding:6px 0; font-size:12px; color:#68737d; font-weight:600;">${t('findDuplicates.dependencies')}</th>
+          </tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+      <p style="font-size:12px; color:#68737d; margin:8px 0 0 0;">${t('findDuplicates.deleteWarning')}</p>
+      <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:14px; border-top:1px solid #e9ebed; margin-top:14px;">
+        <button id="fd-back" class="btn btn-secondary">${t('form.cancel')}</button>
+        <button id="fd-confirm" class="btn btn-danger">${t('findDuplicates.confirmDeleteBtn', { n: results.length })}</button>
+      </div>`;
+
+    document.getElementById('fd-back').onclick    = () => renderSelection(duplicates);
+    document.getElementById('fd-confirm').onclick = () => runDeletion(results.map(r => r.rec));
+  }
+
+  async function runDeletion(toDelete) {
+    let done = 0;
+    const errors = [];
+
+    const showProgress = () => {
+      modal.innerHTML = `
+        <h3 style="margin:0 0 16px 0; font-size:16px;">${t('findDuplicates.title')}</h3>
+        <p style="font-size:14px; color:#2f3941; margin:0 0 10px 0;">${t('findDuplicates.deleting', { done, total: toDelete.length })}</p>
+        <div class="progress-container">
+          <div class="progress-bar-determinate" style="width:${Math.round((done / toDelete.length) * 100)}%"></div>
+        </div>`;
+    };
+
+    showProgress();
+    for (const rec of toDelete) {
+      try {
+        await client.request({ url: `/api/v2/custom_objects/${currentCoKey}/records/${rec.id}`, type: 'DELETE' });
+        tabulatorTable?.deleteRow(rec.id);
+      } catch (e) {
+        console.error(`Failed to delete record ${rec.id}`, e);
+        errors.push(rec.name || rec.id);
+      }
+      done++;
+      showProgress();
+    }
+    updateRecordSummary();
+
+    const successCount = toDelete.length - errors.length;
+    const notice = t('findDuplicates.deleteSuccess', { n: successCount })
+      + (errors.length > 0 ? `  ${t('findDuplicates.deleteErrors', { n: errors.length })}: ${errors.map(escapeHtml).join(', ')}` : '');
+
+    renderSelection(computeDuplicates(), notice);
+  }
+
+  // ── entry point ──────────────────────────────────────
+  renderSelection(computeDuplicates());
+  overlay.style.display = 'flex';
 }
 
 // ----------------------------------------------------
