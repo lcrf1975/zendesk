@@ -5,8 +5,9 @@ import json
 import threading
 import logging
 import time
-from datetime import datetime
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
 
 # --- CONFIGURATION & THEME ---
 COLOR_BG = "#F0F2F5"
@@ -24,14 +25,12 @@ FONT_HEADER = ("Segoe UI", 11, "bold")
 # --- ICONS ---
 ICON_CHECKED = "☑"
 ICON_UNCHECKED = "☐"
-ICON_LINK = "🔗"
-ICON_WARN = "⚠️"
 
 # --- SYSTEM FIELD BLOCKLIST (EXPANDED) ---
 # Comprehensive list including Support, AI, WFM, Messaging, Approvals, and App keys.
 SYSTEM_KEYS = {
     # 1. Standard Support Fields
-    'subject', 'description', 'status', 'custom_status_id', 'ticket_type', 'priority',
+    'subject', 'description', 'status', 'custom_status_id', 'ticket_type', 'tickettype', 'priority',
     'group', 'group_id', 'assignee', 'assignee_id', 'requester', 'requester_id',
     'submitter', 'submitter_id', 'organization', 'organization_id',
     'satisfaction_rating', 'satisfaction_probability',
@@ -111,10 +110,11 @@ class TextHandler(logging.Handler):
 
     def emit(self, record):
         msg = self.format(record)
+        level = record.levelname  # 'INFO', 'WARNING', 'ERROR'
 
         def append():
             self.text_widget.configure(state='normal')
-            self.text_widget.insert(tk.END, msg + '\n')
+            self.text_widget.insert(tk.END, msg + '\n', level)
             self.text_widget.see(tk.END)
             self.text_widget.configure(state='disabled')
         self.text_widget.after(0, append)
@@ -141,7 +141,6 @@ class ZendeskApp:
         # Main Data Store
         self.items_map = {}
         self.visible_items = []
-        self.unique_dates = set()
         self.is_working = False
         self.start_time = 0
 
@@ -149,18 +148,30 @@ class ZendeskApp:
         self.stop_event = threading.Event()
         self._map_lock = threading.Lock()
 
+        # HTTP Session (connection pooling + CA bundle resolved once)
+        self._session = requests.Session()
+        ca_bundle = os.path.expanduser('~/.nscacert_combined.pem')
+        if os.path.exists(ca_bundle):
+            self._session.verify = ca_bundle
+
         self.count_found_var = tk.StringVar(value="Found: 0")
         self.count_selected_var = tk.StringVar(value="Selected: 0")
         self.all_checked = False
         self.selected_count = 0
+
+        # Tooltip state
+        self._tooltip_win = None
+        self._tooltip_after_id = None
 
         # Filter Vars
         self.filter_mode_var = tk.StringVar(value="Fields & Forms")
         self.filter_category_var = tk.StringVar(value="All")
         self.filter_status_var = tk.StringVar(value="All")
         self.filter_usage_var = tk.StringVar(value="All")
+        self.filter_search_var = tk.StringVar()
 
         self.create_layout()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         logging.info("System Ready. Window maximized.")
 
     def setup_window(self):
@@ -300,6 +311,9 @@ class ZendeskApp:
             main_container, style="Card.TFrame", padding=15
         )
         config_frame.pack(fill="x", pady=(0, 15))
+        config_frame.columnconfigure(1, weight=1)
+        config_frame.columnconfigure(3, weight=2)
+        config_frame.columnconfigure(5, weight=2)
 
         ttk.Label(
             config_frame,
@@ -309,23 +323,23 @@ class ZendeskApp:
             foreground=COLOR_ACCENT
         ).grid(row=0, column=0, sticky="w", pady=(0, 10))
 
-        grid_opts = {'padx': 10, 'pady': 5, 'sticky': 'w'}
+        grid_opts = {'padx': 5, 'pady': 5, 'sticky': 'w'}
 
         ttk.Label(
             config_frame, text="Subdomain:", style="Card.TLabel"
         ).grid(row=1, column=0, **grid_opts)
         self.entry_sub = ttk.Entry(
-            config_frame, textvariable=self.subdomain_var, width=25
+            config_frame, textvariable=self.subdomain_var, width=18
         )
-        self.entry_sub.grid(row=1, column=1, **grid_opts)
+        self.entry_sub.grid(row=1, column=1, padx=5, pady=5, sticky='ew')
 
         ttk.Label(
             config_frame, text="Email:", style="Card.TLabel"
         ).grid(row=1, column=2, **grid_opts)
         self.entry_email = ttk.Entry(
-            config_frame, textvariable=self.email_var, width=30
+            config_frame, textvariable=self.email_var, width=22
         )
-        self.entry_email.grid(row=1, column=3, **grid_opts)
+        self.entry_email.grid(row=1, column=3, padx=5, pady=5, sticky='ew')
 
         ttk.Label(
             config_frame, text="Token:", style="Card.TLabel"
@@ -333,27 +347,27 @@ class ZendeskApp:
         self.entry_token = ttk.Entry(
             config_frame,
             textvariable=self.token_var,
-            width=30,
+            width=22,
             show="●"
         )
-        self.entry_token.grid(row=1, column=5, **grid_opts)
+        self.entry_token.grid(row=1, column=5, padx=5, pady=5, sticky='ew')
 
         btn_frame = ttk.Frame(config_frame, style="Card.TFrame", padding=0)
         btn_frame.configure(relief="flat", borderwidth=0)
-        btn_frame.grid(row=1, column=6, padx=20)
+        btn_frame.grid(row=1, column=6, padx=(10, 0))
 
         self.btn_load = ttk.Button(
             btn_frame, text="Load Config", command=self.load_config
         )
-        self.btn_load.pack(side="left", padx=5)
+        self.btn_load.pack(side="left", padx=3)
         self.btn_save = ttk.Button(
             btn_frame, text="Save Config", command=self.save_config
         )
-        self.btn_save.pack(side="left", padx=5)
+        self.btn_save.pack(side="left", padx=3)
         self.btn_fetch = ttk.Button(
             btn_frame, text="Fetch Data", command=self.start_fetch_thread
         )
-        self.btn_fetch.pack(side="left", padx=5)
+        self.btn_fetch.pack(side="left", padx=(3, 0))
 
         # --- MIDDLE: CONTENT ---
         content_split = ttk.Frame(main_container)
@@ -389,6 +403,16 @@ class ZendeskApp:
             "<<ComboboxSelected>>", self.on_mode_change
         )
 
+        # 1b. Text Search
+        ttk.Label(
+            filter_panel, text="Search", style="Card.TLabel"
+        ).pack(anchor="w", pady=(10, 0))
+        self.entry_search = ttk.Entry(
+            filter_panel, textvariable=self.filter_search_var
+        )
+        self.entry_search.pack(fill="x", pady=5)
+        self.filter_search_var.trace_add("write", lambda *_: self.apply_filters_only())
+
         # 2. Category (Context - Only for Fields)
         self.lbl_cat = ttk.Label(
             filter_panel, text="Category", style="Card.TLabel"
@@ -419,6 +443,7 @@ class ZendeskApp:
                 "Macro", "Trigger", "Automation", "View"
             )
         )
+        self.combo_usage.bind("<<ComboboxSelected>>", self.on_secondary_filter_change)
         # Usage hidden by default
 
         # 4. Status
@@ -484,6 +509,8 @@ class ZendeskApp:
         sb.pack(side="right", fill="y")
 
         self.tree.bind('<Button-1>', self.on_tree_click)
+        self.tree.bind('<Motion>', self._on_tree_motion)
+        self.tree.bind('<Leave>', self._on_tree_leave)
 
         # --- BOTTOM: ACTIONS & LOGS ---
         bottom_frame = ttk.Frame(right_panel, style="Card.TFrame", padding=15)
@@ -558,18 +585,34 @@ class ZendeskApp:
         )
         self.progress_bar.pack(fill="x", pady=(0, 10))
 
-        # Log
+        # Log header
+        log_header = ttk.Frame(bottom_frame, style="Card.TFrame")
+        log_header.pack(fill="x", pady=(0, 2))
+        ttk.Label(log_header, text="LOGS", style="Card.TLabel",
+                  font=FONT_BOLD).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            log_header, text="Clear",
+            command=self._clear_log,
+            style="TButton", width=6
+        ).pack(side="right")
+
+        # Log widget
         self.log_text = scrolledtext.ScrolledText(
             bottom_frame,
             height=6,
             state='disabled',
             bg="#F7F8FA",
-            fg="#000000",
+            fg=COLOR_TEXT,
             font=("Consolas", 10),
             borderwidth=1,
             relief="solid"
         )
         self.log_text.pack(fill="both", expand=True)
+
+        # Level colour tags
+        self.log_text.tag_config('INFO',    foreground=COLOR_TEXT)
+        self.log_text.tag_config('WARNING', foreground="#D4800A")
+        self.log_text.tag_config('ERROR',   foreground=COLOR_DANGER)
 
         handler = TextHandler(self.log_text)
         formatter = logging.Formatter(
@@ -578,7 +621,8 @@ class ZendeskApp:
         handler.setFormatter(formatter)
         logger = logging.getLogger()
         logger.setLevel(logging.INFO)
-        logger.addHandler(handler)
+        if not any(isinstance(h, TextHandler) for h in logger.handlers):
+            logger.addHandler(handler)
 
         # Initial Filter State
         self.on_mode_change(None)
@@ -651,22 +695,27 @@ class ZendeskApp:
 
         self.combo_mode.configure(state=state)
         self.combo_status.configure(state=state)
-
-        if self.filter_mode_var.get() == "Fields & Forms":
-            self.combo_category.configure(state=state)
-        else:
-            self.combo_category.configure(state='disabled')
+        self.combo_category.configure(state=state)
 
         if self.filter_mode_var.get() == "Dynamic Content":
             self.combo_usage.configure(state=state)
         else:
             self.combo_usage.configure(state='disabled')
 
+        self.entry_search.configure(state=state)
         self.date_listbox.configure(state=state)
         if enabled:
             self.tree.bind('<Button-1>', self.on_tree_click)
+            self.tree.bind('<Motion>', self._on_tree_motion)
+            self.tree.bind('<Leave>', self._on_tree_leave)
         else:
             self.tree.unbind('<Button-1>')
+            self.tree.unbind('<Motion>')
+            self.tree.unbind('<Leave>')
+            self._hide_tooltip()
+            if self._tooltip_after_id:
+                self.root.after_cancel(self._tooltip_after_id)
+                self._tooltip_after_id = None
 
     def format_time(self, seconds):
         if seconds < 60:
@@ -718,6 +767,14 @@ class ZendeskApp:
             defaultextension=".json", filetypes=[("JSON", "*.json")]
         )
         if f:
+            if not messagebox.askyesno(
+                "Security Notice",
+                "Your API token will be saved in plain text.\n"
+                "Keep this file secure and do not share it.\n\n"
+                "Proceed with saving?",
+                icon='warning'
+            ):
+                return
             try:
                 data = {
                     "subdomain": self.subdomain_var.get(),
@@ -729,9 +786,6 @@ class ZendeskApp:
                 logging.info("Configuration saved.")
             except Exception as e:
                 logging.error(f"Config Save Error: {e}")
-
-    def get_auth(self):
-        return (f"{self.email_var.get()}/token", self.token_var.get())
 
     def start_fetch_thread(self):
         sub = self.subdomain_var.get().strip()
@@ -761,10 +815,17 @@ class ZendeskApp:
         ).start()
 
     def fetch_data_thread(self, sub, auth):
-        logging.info("Starting data fetch...")
+        logging.info(f"Connecting to {sub}.zendesk.com ...")
         temp_items_map = {}
         aux_data = {}
         base_url = f"https://{sub}.zendesk.com/api/v2"
+
+        # Fetch DC category map upfront (gracefully skipped if unavailable)
+        dc_cat_map = {}
+        cat_resp = self.safe_request('GET', f"{base_url}/dynamic_content/item_categories.json", auth=auth)
+        if cat_resp is not None and cat_resp.status_code == 200:
+            for cat in cat_resp.json().get('item_categories', []):
+                dc_cat_map[cat['id']] = cat['name']
 
         main_endpoints = [
             ("ticket_fields", "Ticket Field"),
@@ -794,14 +855,20 @@ class ZendeskApp:
                     progress=(current_op / total_ops) * 80
                 )
                 current_op += 1
+                ep_count = 0
 
                 url = f"{base_url}/{ep}.json"
+                page = 0
                 while url:
                     if self.stop_event.is_set():
                         break
+                    page += 1
+                    if page > 500:
+                        logging.warning(f"Pagination limit reached for {label}. Stopping.")
+                        break
                     resp = self.safe_request('GET', url, auth=auth)
-                    if not resp or resp.status_code != 200:
-                        logging.error(f"API Error {resp.status_code if resp else 'Timeout'}: {label}")
+                    if resp is None or resp.status_code != 200:
+                        logging.error(f"API Error {resp.status_code if resp is not None else 'Timeout'}: {label}")
                         break
 
                     data = resp.json()
@@ -809,6 +876,7 @@ class ZendeskApp:
                     items_list = data.get(json_key, [])
 
                     for item in items_list:
+
                         # --- ENHANCED SYSTEM FILTERING ---
 
                         # 1. API Flag Checks
@@ -846,11 +914,18 @@ class ZendeskApp:
                                 if variant.get('locale_id') == default_loc:
                                     default_text = variant.get('content', '')
                                     break
+                            cat_id = item.get('category_id') or item.get('group_id')
+                            if cat_id and dc_cat_map:
+                                category = dc_cat_map.get(cat_id, '')
+                            else:
+                                name = item.get('name', '')
+                                category = name.split('::')[0].strip() if '::' in name else ''
                             extra_data = {
                                 'placeholder': placeholder,
                                 'flatten_text': default_text,
                                 'is_used': False,
-                                'usage_list': []
+                                'usage_list': [],
+                                'category': category
                             }
 
                         iid = str(item['id'])
@@ -871,7 +946,10 @@ class ZendeskApp:
                             "checked": False,
                             "extra": extra_data
                         }
+                        ep_count += 1
                     url = data.get('next_page')
+                if not self.stop_event.is_set():
+                    logging.info(f"  {label}s: {ep_count} item(s) fetched")
 
             # FETCH SAFETY DATA
             if not self.stop_event.is_set():
@@ -883,13 +961,19 @@ class ZendeskApp:
                         progress=(current_op / total_ops) * 80
                     )
                     current_op += 1
+                    aux_count = 0
 
                     url = f"{base_url}/{ep}.json"
+                    page = 0
                     while url:
                         if self.stop_event.is_set():
                             break
+                        page += 1
+                        if page > 500:
+                            logging.warning(f"Pagination limit reached for {label}. Stopping.")
+                            break
                         resp = self.safe_request('GET', url, auth=auth)
-                        if not resp or resp.status_code != 200:
+                        if resp is None or resp.status_code != 200:
                             break
                         data = resp.json()
                         items_list = data.get(ep, [])
@@ -897,9 +981,13 @@ class ZendeskApp:
                             str_dump = json.dumps(item)
                             aux_data[f"{label}_{item['id']}"] = {
                                 "type": label,
+                                "name": item.get('title', item.get('name', '')),
                                 "content": str_dump
                             }
+                            aux_count += 1
                         url = data.get('next_page')
+                    if not self.stop_event.is_set():
+                        logging.info(f"  {label}s: {aux_count} scanned for dependencies")
 
         except Exception as e:
             logging.error(f"Critical Fetch Error: {e}")
@@ -914,34 +1002,60 @@ class ZendeskApp:
                 progress=85
             )
 
-            field_titles = {
-                v['title'].strip(): v['type']
+            # Maps field/form title -> (type, title) for DC placeholder lookups
+            field_title_map = {
+                v['title'].strip(): (v['type'], v['title'].strip())
                 for v in temp_items_map.values()
                 if v['type'] != "Dynamic Content"
             }
 
+            # Collect unique placeholders to avoid O(n*m) inner loop
+            unique_phs = {
+                v['extra'].get('placeholder', '').strip()
+                for v in temp_items_map.values()
+                if v['type'] == "Dynamic Content" and v['extra'].get('placeholder')
+            }
+
+            # Single pass over aux_data: build ph -> {types, details} index
+            ph_aux_usage = {ph: {'types': set(), 'details': set()} for ph in unique_phs}
+            for aux_val in aux_data.values():
+                if self.stop_event.is_set():
+                    break
+                for ph in unique_phs:
+                    if ph in aux_val['content']:
+                        t = aux_val['type']
+                        n = aux_val.get('name', '').strip()
+                        ph_aux_usage[ph]['types'].add(t)
+                        ph_aux_usage[ph]['details'].add(f"{t}: {n}" if n else t)
+
+            # Apply results to each DC item
             for v in temp_items_map.values():
                 if self.stop_event.is_set():
                     break
-                if v['type'] == "Dynamic Content":
-                    ph = v['extra'].get('placeholder', '').strip()
-                    if not ph:
-                        continue
+                if v['type'] != "Dynamic Content":
+                    continue
+                ph = v['extra'].get('placeholder', '').strip()
+                if not ph:
+                    continue
+                usage_types = set()
+                usage_details = set()
+                if ph in field_title_map:
+                    ftype, fname = field_title_map[ph]
+                    usage_types.add(ftype)
+                    usage_details.add(f"{ftype}: {fname}")
+                aux = ph_aux_usage.get(ph, {})
+                usage_types.update(aux.get('types', set()))
+                usage_details.update(aux.get('details', set()))
+                if usage_types:
+                    v['extra']['is_used'] = True
+                    v['extra']['usage_list'] = sorted(usage_types)
+                    v['extra']['usage_details'] = sorted(usage_details)
 
-                    if ph in field_titles:
-                        v['extra']['is_used'] = True
-                        v['extra']['usage_list'].append(field_titles[ph])
-
-                    for aux_val in aux_data.values():
-                        if ph in aux_val['content']:
-                            v['extra']['is_used'] = True
-                            if aux_val['type'] not in v['extra']['usage_list']:
-                                v['extra']['usage_list'].append(aux_val['type'])
-
-                    if v['extra']['is_used']:
-                        v['extra']['usage_list'] = sorted(
-                            list(set(v['extra']['usage_list']))
-                        )
+            dc_total = sum(1 for v in temp_items_map.values() if v['type'] == "Dynamic Content")
+            dc_used  = sum(1 for v in temp_items_map.values()
+                          if v['type'] == "Dynamic Content" and v['extra'].get('is_used'))
+            if dc_total:
+                logging.info(f"  DC dependency scan: {dc_used}/{dc_total} items in use")
 
         if self.stop_event.is_set():
             logging.warning("Fetch operation stopped by user.")
@@ -955,13 +1069,20 @@ class ZendeskApp:
 
         self.items_map = new_data
         self.selected_count = 0
-        self.unique_dates.clear()
 
         total_time = time.time() - self.start_time
+
+        type_counts = Counter(v['type'] for v in self.items_map.values())
+        breakdown = ", ".join(f"{t}: {c}" for t, c in sorted(type_counts.items()))
         logging.info(
             f"Fetch complete. {len(self.items_map)} items in "
-            f"{self.format_time(total_time)}."
+            f"{self.format_time(total_time)}. [{breakdown or 'none'}]"
         )
+        if type_counts.get("Dynamic Content", 0) == 0:
+            logging.warning(
+                "No Dynamic Content items were fetched. "
+                "Check API permissions or inspect errors above."
+            )
 
         self.progress_var.set(100)
         self.status_var.set("Ready")
@@ -978,20 +1099,29 @@ class ZendeskApp:
     def on_mode_change(self, event):
         mode = self.filter_mode_var.get()
 
+        active_state = 'disabled' if self.is_working else 'normal'
+
         if mode == "Fields & Forms":
             self.lbl_usage.pack_forget()
             self.combo_usage.pack_forget()
+            self.combo_usage.configure(state='disabled')
+            self.combo_category.configure(values=(
+                "All", "Ticket Fields", "Ticket Forms", "User Fields", "Organization Fields"
+            ))
             self.lbl_cat.pack(anchor="w", pady=(10, 0), after=self.combo_mode)
             self.combo_category.pack(fill="x", pady=5, after=self.lbl_cat)
+            self.combo_category.configure(state=active_state)
             self.filter_category_var.set("All")
         else:
-            self.lbl_cat.pack_forget()
-            self.combo_category.pack_forget()
-            self.lbl_usage.pack(
-                anchor="w", pady=(10, 0), after=self.combo_mode
-            )
+            self._refresh_dc_category_combo()
+            self.lbl_cat.pack(anchor="w", pady=(10, 0), after=self.combo_mode)
+            self.combo_category.pack(fill="x", pady=5, after=self.lbl_cat)
+            self.combo_category.configure(state=active_state)
+            self.lbl_usage.pack(anchor="w", pady=(5, 0), after=self.combo_category)
             self.combo_usage.pack(fill="x", pady=5, after=self.lbl_usage)
+            self.combo_usage.configure(state=active_state)
             self.filter_usage_var.set("All")
+            self.filter_category_var.set("All")
 
         self.setup_tree_columns(mode)
         self.update_date_listbox()
@@ -1001,16 +1131,31 @@ class ZendeskApp:
         self.update_date_listbox()
         self.apply_filters_only()
 
-    def update_date_listbox(self):
-        mode = self.filter_mode_var.get()
-        cat = self.filter_category_var.get()
-        status = self.filter_status_var.get()
-        usage = self.filter_usage_var.get()
+    def _refresh_dc_category_combo(self):
+        """Populate the category combo with unique DC categories from items_map."""
+        cats = sorted({
+            v['extra'].get('category', '')
+            for v in self.items_map.values()
+            if v['type'] == "Dynamic Content" and v['extra'].get('category')
+        })
+        values = ["All"] + cats
+        self.combo_category.configure(values=values)
+        if self.filter_category_var.get() not in values:
+            self.filter_category_var.set("All")
 
-        valid_dates = set()
-        for data in self.items_map.values():
+    def _iter_filtered_items(self, mode, cat, status, usage, selected_dates=None, search=""):
+        """Yield (iid, data) pairs matching the current filter state."""
+        search_lower = search.lower()
+        for iid, data in self.items_map.items():
+            if search_lower:
+                title = data.get('title', '').lower()
+                ph = data.get('extra', {}).get('placeholder', '').lower()
+                if search_lower not in title and search_lower not in ph and search_lower not in iid:
+                    continue
             if mode == "Dynamic Content":
                 if data['type'] != "Dynamic Content":
+                    continue
+                if cat != "All" and data.get('extra', {}).get('category', '') != cat:
                     continue
             else:
                 if data['type'] == "Dynamic Content":
@@ -1031,19 +1176,33 @@ class ZendeskApp:
             if mode == "Dynamic Content" and usage != "All":
                 is_used = data.get('extra', {}).get('is_used', False)
                 usage_list = data.get('extra', {}).get('usage_list', [])
-
                 if usage == "Unused" and is_used:
                     continue
                 if usage != "Unused":
                     if not is_used:
                         continue
-                    if usage != "Used by Fields/Forms" and usage not in usage_list:
+                    if usage not in usage_list:
                         continue
 
-            valid_dates.add(data['date'])
+            if selected_dates and data['date'] not in selected_dates:
+                continue
+
+            yield iid, data
+
+    def update_date_listbox(self):
+        mode = self.filter_mode_var.get()
+        cat = self.filter_category_var.get()
+        status = self.filter_status_var.get()
+        usage = self.filter_usage_var.get()
+        search = self.filter_search_var.get()
+
+        valid_dates = {
+            data['date']
+            for _, data in self._iter_filtered_items(mode, cat, status, usage, search=search)
+        }
 
         self.date_listbox.delete(0, tk.END)
-        for d in sorted(list(valid_dates), reverse=True):
+        for d in sorted(valid_dates, reverse=True):
             self.date_listbox.insert(tk.END, d)
 
     def apply_filters_only(self, event=None):
@@ -1054,73 +1213,30 @@ class ZendeskApp:
         cat = self.filter_category_var.get()
         status = self.filter_status_var.get()
         usage = self.filter_usage_var.get()
+        search = self.filter_search_var.get()
 
         selected_indices = self.date_listbox.curselection()
-        selected_dates = [self.date_listbox.get(i) for i in selected_indices]
+        selected_dates = [self.date_listbox.get(i) for i in selected_indices] or None
 
-        for iid, data in self.items_map.items():
-            if mode == "Dynamic Content":
-                if data['type'] != "Dynamic Content":
-                    continue
-            else:
-                if data['type'] == "Dynamic Content":
-                    continue
-                if cat == "Ticket Fields" and data['type'] != "Ticket Field":
-                    continue
-                if cat == "Ticket Forms" and data['type'] != "Ticket Form":
-                    continue
-                if cat == "User Fields" and data['type'] != "User Field":
-                    continue
-                if cat == "Organization Fields" and data['type'] != "Organization Field":
-                    continue
-
-            status_str = "Active" if data['active'] else "Inactive"
-            if status != "All" and status_str != status:
-                continue
-
-            is_used = data.get('extra', {}).get('is_used', False)
-            usage_list = data.get('extra', {}).get('usage_list', [])
-
-            if mode == "Dynamic Content" and usage != "All":
-                if usage == "Unused" and is_used:
-                    continue
-                if usage != "Unused":
-                    if not is_used:
-                        continue
-                    if usage != "Used by Fields/Forms" and usage not in usage_list:
-                        continue
-
-            if selected_dates and data['date'] not in selected_dates:
-                continue
-
+        for iid, data in self._iter_filtered_items(mode, cat, status, usage, selected_dates, search=search):
             self.visible_items.append(iid)
             icon = ICON_CHECKED if data['checked'] else ICON_UNCHECKED
-            # Row Number
             row_num = len(self.visible_items)
+            status_str = "Active" if data['active'] else "Inactive"
 
             if mode == "Dynamic Content":
                 ph = data['extra'].get('placeholder', '')
                 txt = data['extra'].get('flatten_text', '')
-                usage_display = ""
-                if usage_list:
-                    usage_display = ", ".join(usage_list)
+                usage_details = data.get('extra', {}).get('usage_details', [])
+                usage_display = ", ".join(usage_details) if usage_details else ""
                 self.tree.insert(
-                    "",
-                    "end",
-                    iid=iid,
-                    values=(
-                        row_num, icon, usage_display, data['date'], ph, txt, iid
-                    )
+                    "", "end", iid=iid,
+                    values=(row_num, icon, usage_display, data['date'], ph, txt, iid)
                 )
             else:
                 self.tree.insert(
-                    "",
-                    "end",
-                    iid=iid,
-                    values=(
-                        row_num, icon, data['type'], status_str, data['date'],
-                        data['title'], iid
-                    )
+                    "", "end", iid=iid,
+                    values=(row_num, icon, data['type'], status_str, data['date'], data['title'], iid)
                 )
 
         self.update_counter()
@@ -1133,7 +1249,97 @@ class ZendeskApp:
             # Column #2 is now the Checkbox (index 1) because #1 is Row Number
             if col == "#2":
                 iid = self.tree.identify_row(event.y)
-                self.toggle_check(iid)
+                if iid:
+                    self.toggle_check(iid)
+
+    def _on_tree_motion(self, event):
+        # Cancel any pending tooltip
+        if self._tooltip_after_id:
+            self.root.after_cancel(self._tooltip_after_id)
+            self._tooltip_after_id = None
+
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            self._hide_tooltip()
+            return
+
+        col = self.tree.identify_column(event.x)
+        # Skip row-number and checkbox columns
+        if col in ("#1", "#2"):
+            self._hide_tooltip()
+            return
+
+        iid = self.tree.identify_row(event.y)
+        if not iid:
+            self._hide_tooltip()
+            return
+
+        col_index = int(col.lstrip("#")) - 1
+        values = self.tree.item(iid, "values")
+        if col_index >= len(values):
+            self._hide_tooltip()
+            return
+
+        text = str(values[col_index]).strip()
+        if not text:
+            self._hide_tooltip()
+            return
+
+        x, y = event.x_root + 12, event.y_root + 16
+        self._tooltip_after_id = self.root.after(
+            450, lambda: self._show_tooltip(text, x, y)
+        )
+
+    def _on_tree_leave(self, _event):
+        if self._tooltip_after_id:
+            self.root.after_cancel(self._tooltip_after_id)
+            self._tooltip_after_id = None
+        self._hide_tooltip()
+
+    def _show_tooltip(self, text, x, y):
+        self._hide_tooltip()
+        win = tk.Toplevel(self.root)
+        win.wm_overrideredirect(True)
+        win.wm_geometry("+0+0")  # off-screen placeholder so we can measure
+        lbl = tk.Label(
+            win, text=text, justify="left",
+            background="#ffffe0", foreground="#000000",
+            relief="solid", borderwidth=1,
+            font=("Segoe UI", 10),
+            wraplength=500, padx=6, pady=4
+        )
+        lbl.pack()
+        win.update_idletasks()  # force geometry calculation
+
+        tw = win.winfo_reqwidth()
+        th = win.winfo_reqheight()
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+
+        if x + tw > sw:
+            x = sw - tw - 4
+        if y + th > sh:
+            y = y - th - 28  # flip above the cursor
+
+        win.wm_geometry(f"+{x}+{y}")
+        self._tooltip_win = win
+
+    def _hide_tooltip(self):
+        if self._tooltip_win:
+            self._tooltip_win.destroy()
+            self._tooltip_win = None
+
+    def _clear_log(self):
+        self.log_text.configure(state='normal')
+        self.log_text.delete('1.0', tk.END)
+        self.log_text.configure(state='disabled')
+
+    def _on_close(self):
+        if self._tooltip_after_id:
+            self.root.after_cancel(self._tooltip_after_id)
+            self._tooltip_after_id = None
+        self._hide_tooltip()
+        self.root.destroy()
 
     def toggle_check(self, iid):
         was_checked = self.items_map[iid]['checked']
@@ -1203,9 +1409,9 @@ class ZendeskApp:
             self.update_clock()
             self.stop_event.clear()
 
-            sub = self.subdomain_var.get()
-            email = self.email_var.get()
-            token = self.token_var.get()
+            sub = self.subdomain_var.get().strip()
+            email = self.email_var.get().strip()
+            token = self.token_var.get().strip()
             auth = (f"{email}/token", token)
 
             threading.Thread(
@@ -1214,13 +1420,24 @@ class ZendeskApp:
                 daemon=True
             ).start()
 
-    def safe_request(self, method, url, **kwargs):
-        """Retries request on 429 (Rate Limit) errors."""
+    def safe_request(self, method, url, use_session=True, **kwargs):
+        """Retries request on 429 (Rate Limit) errors.
+
+        Set use_session=False for thread-safe calls from worker threads.
+        """
         kwargs.setdefault('timeout', 30)
+        if use_session:
+            kwargs.setdefault('verify', self._session.verify)
+        else:
+            ca_bundle = getattr(self._session, 'verify', True)
+            kwargs.setdefault('verify', ca_bundle)
         retries = 3
         for i in range(retries):
             try:
-                response = requests.request(method, url, **kwargs)
+                if use_session:
+                    response = self._session.request(method, url, **kwargs)
+                else:
+                    response = requests.request(method, url, **kwargs)
                 if response.status_code == 429:
                     retry_after = int(response.headers.get('Retry-After', 5))
                     logging.warning(
@@ -1255,6 +1472,11 @@ class ZendeskApp:
                             v for v in self.items_map.values()
                             if v['title'].strip() == dc_ph.strip()
                         ]
+                    if targets:
+                        logging.info(
+                            f"  Flatten: updating {len(targets)} field(s) "
+                            f"using '{item['title']}'"
+                        )
                     for t in targets:
                         if self.stop_event.is_set():
                             return (False, item['id'], "Stopped during flatten")
@@ -1268,9 +1490,15 @@ class ZendeskApp:
                             if t['ep'] == 'ticket_forms':
                                 payload = {'name': dc_tx}
 
-                            self.safe_request(
-                                'PUT', upd_url, json={json_key: payload}, auth=auth
+                            fr = self.safe_request(
+                                'PUT', upd_url, use_session=False,
+                                json={json_key: payload}, auth=auth
                             )
+                            if fr is None or fr.status_code not in [200, 201]:
+                                logging.warning(
+                                    f"Flatten failed for {t['type']} '{t['title']}' "
+                                    f"(HTTP {fr.status_code if fr else 'Timeout'})"
+                                )
 
             # --- DEACTIVATE ---
             if item['active'] and item['type'] != "Dynamic Content":
@@ -1281,22 +1509,24 @@ class ZendeskApp:
                 json_key = KEY_MAP.get(item['ep'])
 
                 if json_key:
+                    logging.info(f"  Deactivating: {item['type']} '{item['title']}'")
                     r = self.safe_request(
                         'PUT',
                         base_url,
+                        use_session=False,
                         json={json_key: {'active': False}},
                         auth=auth
                     )
-                    if not r or r.status_code not in [200, 201]:
+                    if r is None or r.status_code not in [200, 201]:
                         return (False, item['id'], "Failed to deactivate")
 
             # --- DELETE ---
             if self.stop_event.is_set():
                 return (False, item['id'], "Stopped before delete")
 
-            r = self.safe_request('DELETE', base_url, auth=auth)
+            r = self.safe_request('DELETE', base_url, use_session=False, auth=auth)
 
-            if r and r.status_code in [204, 200]:
+            if r is not None and r.status_code in [204, 200]:
                 return (True, item['id'], f"Deleted: {item['title']}")
             else:
                 if r is None:
@@ -1311,7 +1541,9 @@ class ZendeskApp:
             return (False, item['id'], f"Error: {item['title']} - {str(e)}")
 
     def run_delete(self, items, sub, auth):
-        logging.info("--- BATCH DELETE STARTED (Multi-Threaded) ---")
+        breakdown = Counter(i['type'] for i in items)
+        bd_str = ", ".join(f"{c}x {t}" for t, c in sorted(breakdown.items()))
+        logging.info(f"--- DELETE STARTED: {len(items)} item(s) — {bd_str} ---")
         success = 0
         total = len(items)
         self._update_status(progress=0)
@@ -1353,9 +1585,9 @@ class ZendeskApp:
 
     def finish_delete_ui(self, success, total):
         keys = [k for k, v in self.items_map.items() if v.get('deleted')]
-        self.selected_count -= len(keys)
         for k in keys:
             del self.items_map[k]
+        self.selected_count = sum(1 for v in self.items_map.values() if v.get('checked'))
 
         total_time = time.time() - self.start_time
         logging.info(
