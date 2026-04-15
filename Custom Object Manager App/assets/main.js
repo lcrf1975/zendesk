@@ -48,7 +48,7 @@ const TRANSLATIONS = {
     'row.edit': 'Edit', 'row.delete': 'Delete',
     'filter.title': 'Advanced Filters', 'filter.match': 'Match:',
     'filter.and': 'ALL conditions (AND)', 'filter.or': 'ANY condition (OR)',
-    'filter.hint': '* wildcard: <code>abc*</code> starts with &nbsp;·&nbsp; <code>*xyz</code> ends with &nbsp;·&nbsp; <code>*text*</code> contains &nbsp;·&nbsp; Numeric/date operators use exact values',
+    'filter.hint': '* wildcard: abc* starts with  ·  *xyz ends with  ·  *text* contains  ·  Numeric/date operators use exact values',
     'filter.addCondition': '+ Add Condition', 'filter.apply': 'Apply Filter', 'filter.clearAll': 'Clear All',
     'filter.valuePlaceholder': 'value, prefix*, *suffix, *contains*',
     'op.eq': '= equals', 'op.neq': '≠ not equals', 'op.empty': 'is empty / null',
@@ -183,7 +183,7 @@ const TRANSLATIONS = {
     'row.edit': 'Editar', 'row.delete': 'Excluir',
     'filter.title': 'Filtros Avançados', 'filter.match': 'Corresponder:',
     'filter.and': 'TODAS as condições (E)', 'filter.or': 'QUALQUER condição (OU)',
-    'filter.hint': '* curinga: <code>abc*</code> começa com &nbsp;·&nbsp; <code>*xyz</code> termina com &nbsp;·&nbsp; <code>*texto*</code> contém &nbsp;·&nbsp; Operadores numéricos/data usam valores exatos',
+    'filter.hint': '* curinga: abc* começa com  ·  *xyz termina com  ·  *texto* contém  ·  Operadores numéricos/data usam valores exatos',
     'filter.addCondition': '+ Adicionar Condição', 'filter.apply': 'Aplicar Filtro', 'filter.clearAll': 'Limpar Tudo',
     'filter.valuePlaceholder': 'valor, prefixo*, *sufixo, *contém*',
     'op.eq': '= igual a', 'op.neq': '≠ diferente de', 'op.empty': 'está vazio / nulo',
@@ -318,7 +318,7 @@ const TRANSLATIONS = {
     'row.edit': 'Editar', 'row.delete': 'Eliminar',
     'filter.title': 'Filtros Avanzados', 'filter.match': 'Coincidir:',
     'filter.and': 'TODAS las condiciones (Y)', 'filter.or': 'CUALQUIER condición (O)',
-    'filter.hint': '* comodín: <code>abc*</code> comienza con &nbsp;·&nbsp; <code>*xyz</code> termina con &nbsp;·&nbsp; <code>*texto*</code> contiene &nbsp;·&nbsp; Operadores numéricos/fecha usan valores exactos',
+    'filter.hint': '* comodín: abc* comienza con  ·  *xyz termina con  ·  *texto* contiene  ·  Operadores numéricos/fecha usan valores exactos',
     'filter.addCondition': '+ Agregar Condición', 'filter.apply': 'Aplicar Filtro', 'filter.clearAll': 'Limpiar Todo',
     'filter.valuePlaceholder': 'valor, prefijo*, *sufijo, *contiene*',
     'op.eq': '= igual a', 'op.neq': '≠ diferente de', 'op.empty': 'está vacío / nulo',
@@ -466,9 +466,6 @@ function applyI18nToDOM() {
   document.title = t('app.title');
   document.querySelectorAll('[data-i18n]').forEach(el => {
     el.textContent = t(el.getAttribute('data-i18n'));
-  });
-  document.querySelectorAll('[data-i18n-html]').forEach(el => {
-    el.innerHTML = t(el.getAttribute('data-i18n-html'));
   });
   document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
     el.placeholder = t(el.getAttribute('data-i18n-placeholder'));
