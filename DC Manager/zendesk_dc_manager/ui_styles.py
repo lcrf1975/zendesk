@@ -24,7 +24,6 @@ from zendesk_dc_manager.config import (
     TEXT_COLORS,
     PLACEHOLDER_COLORS,
     PLACEHOLDER_TEXT_COLORS,
-    LOG_COLORS,
 )
 
 
@@ -108,7 +107,7 @@ def get_main_stylesheet() -> str:
             border: 1px solid #E5E7EB;
             border-radius: 8px;
             margin-top: 12px;
-            padding: 16px;
+            padding-top: 16px;
             background-color: #FFFFFF;
         }}
 
@@ -224,7 +223,7 @@ def get_main_stylesheet() -> str:
             background-color: #D1D5DB;
         }}
 
-        QTableWidget {{
+        QTableView {{
             gridline-color: #E5E7EB;
             background-color: #FFFFFF;
             alternate-background-color: #F9FAFB;
@@ -234,12 +233,12 @@ def get_main_stylesheet() -> str:
             border-radius: 8px;
         }}
 
-        QTableWidget::item {{
+        QTableView::item {{
             padding: 8px;
             border-bottom: 1px solid #F3F4F6;
         }}
 
-        QTableWidget::item:selected {{
+        QTableView::item:selected {{
             background-color: #EFF6FF;
             color: #1E40AF;
         }}
@@ -322,8 +321,3 @@ def get_main_stylesheet() -> str:
         }}
     """
 
-
-# Alias for backward compatibility
-def load_application_stylesheet() -> str:
-    """Alias for get_main_stylesheet() for backward compatibility."""
-    return get_main_stylesheet()

@@ -31,8 +31,8 @@ from zendesk_dc_manager.config import (
     PLACEHOLDER_TEXT_COLORS,
 )
 from zendesk_dc_manager.types import AppState, StateManager, TranslationStats
+from zendesk_dc_manager.utils import validate_subdomain, validate_email, validate_token
 from zendesk_dc_manager.controller import ZendeskController
-from zendesk_dc_manager.ui_styles import get_main_stylesheet
 from zendesk_dc_manager.ui_widgets import (
     StepWorker,
     PreviewTableWidget,
@@ -268,8 +268,6 @@ class ZendeskWizard(QMainWindow):
         self.sidebar.buttons[4].setEnabled(self._is_connected)
 
     def _init_ui(self):
-        self.setStyleSheet(get_main_stylesheet())
-
         central = QWidget()
         self.setCentralWidget(central)
 
@@ -338,6 +336,7 @@ class ZendeskWizard(QMainWindow):
 
         form_group = QGroupBox("Credentials")
         form_layout = QGridLayout(form_group)
+        form_layout.setContentsMargins(12, 8, 12, 12)
         form_layout.setColumnStretch(1, 1)
         form_layout.setVerticalSpacing(12)
         form_layout.setHorizontalSpacing(12)
@@ -404,6 +403,7 @@ class ZendeskWizard(QMainWindow):
 
         options_group = QGroupBox("Options")
         options_layout = QVBoxLayout(options_group)
+        options_layout.setContentsMargins(12, 8, 12, 12)
 
         self.chk_save_credentials = QCheckBox("Save credentials for next session")
         self.chk_save_credentials.setChecked(True)
@@ -411,6 +411,7 @@ class ZendeskWizard(QMainWindow):
 
         profile_group = QGroupBox("Profile")
         profile_layout = QVBoxLayout(profile_group)
+        profile_layout.setContentsMargins(12, 8, 12, 12)
         profile_layout.setSpacing(12)
 
         profile_note = QLabel(
@@ -499,7 +500,7 @@ class ZendeskWizard(QMainWindow):
 
         ticket_group = QGroupBox("Ticket Fields && Forms")
         ticket_layout = QVBoxLayout(ticket_group)
-        ticket_layout.setContentsMargins(8, 8, 8, 8)
+        ticket_layout.setContentsMargins(12, 8, 12, 12)
         ticket_layout.setSpacing(8)
 
         self.chk_scan_fields = QCheckBox("Ticket Fields")
@@ -513,7 +514,7 @@ class ZendeskWizard(QMainWindow):
 
         status_group = QGroupBox("Ticket Statuses")
         status_layout = QVBoxLayout(status_group)
-        status_layout.setContentsMargins(8, 8, 8, 8)
+        status_layout.setContentsMargins(12, 8, 12, 12)
         status_layout.setSpacing(8)
 
         self.chk_scan_custom_statuses = QCheckBox("Custom Statuses")
@@ -523,7 +524,7 @@ class ZendeskWizard(QMainWindow):
 
         user_org_group = QGroupBox("User && Organization")
         user_org_layout = QVBoxLayout(user_org_group)
-        user_org_layout.setContentsMargins(8, 8, 8, 8)
+        user_org_layout.setContentsMargins(12, 8, 12, 12)
         user_org_layout.setSpacing(8)
 
         self.chk_scan_user_fields = QCheckBox("User Fields")
@@ -543,7 +544,7 @@ class ZendeskWizard(QMainWindow):
 
         rules_group = QGroupBox("Business Rules")
         rules_layout = QVBoxLayout(rules_group)
-        rules_layout.setContentsMargins(8, 8, 8, 8)
+        rules_layout.setContentsMargins(12, 8, 12, 12)
         rules_layout.setSpacing(8)
 
         self.chk_scan_macros = QCheckBox("Macros")
@@ -569,7 +570,7 @@ class ZendeskWizard(QMainWindow):
 
         hc_group = QGroupBox("Help Center")
         hc_layout = QVBoxLayout(hc_group)
-        hc_layout.setContentsMargins(8, 8, 8, 8)
+        hc_layout.setContentsMargins(12, 8, 12, 12)
         hc_layout.setSpacing(8)
 
         self.chk_scan_cats = QCheckBox("Categories")
@@ -1002,6 +1003,7 @@ class ZendeskWizard(QMainWindow):
 
         options_group = QGroupBox("Apply Options")
         options_layout = QVBoxLayout(options_group)
+        options_layout.setContentsMargins(12, 8, 12, 12)
 
         self.chk_update_existing_dc = QCheckBox(
             "Update translations for items already linked to Dynamic Content"
@@ -1049,6 +1051,7 @@ class ZendeskWizard(QMainWindow):
 
         file_group = QGroupBox("Select Backup File")
         file_layout = QHBoxLayout(file_group)
+        file_layout.setContentsMargins(12, 8, 12, 12)
         file_layout.setSpacing(8)
 
         self.txt_rollback_file = QLineEdit()
@@ -1064,6 +1067,7 @@ class ZendeskWizard(QMainWindow):
 
         info_group = QGroupBox("Backup Contents")
         info_layout = QVBoxLayout(info_group)
+        info_layout.setContentsMargins(12, 8, 12, 12)
         self.rollback_info = QTextEdit()
         self.rollback_info.setReadOnly(True)
         self.rollback_info.setPlaceholderText(
@@ -1114,6 +1118,7 @@ class ZendeskWizard(QMainWindow):
 
         trans_group = QGroupBox("Translation Settings")
         trans_layout = QGridLayout(trans_group)
+        trans_layout.setContentsMargins(12, 8, 12, 12)
         trans_layout.setColumnStretch(1, 1)
         trans_layout.setVerticalSpacing(12)
 
@@ -1160,6 +1165,7 @@ class ZendeskWizard(QMainWindow):
 
         cache_group = QGroupBox("Cache Settings")
         cache_layout = QGridLayout(cache_group)
+        cache_layout.setContentsMargins(12, 8, 12, 12)
         cache_layout.setColumnStretch(1, 1)
         cache_layout.setVerticalSpacing(12)
 
@@ -1330,12 +1336,12 @@ class ZendeskWizard(QMainWindow):
 
     def _on_cell_edited(self, row: int, field: str, value: str, source: str):
         if 0 <= row < len(self._work_items_cache):
-            self._work_items_cache[row][field] = value
-            self._work_items_cache[row][f'{field}_source'] = source
             self.controller.update_work_item(row, {
                 field: value,
                 f'{field}_source': source
             })
+            self._work_items_cache[row][field] = value
+            self._work_items_cache[row][f'{field}_source'] = source
 
     def _on_selection_changed(self, count: int):
         self.lbl_sum_selected.setText(f"Selected: {count}")
@@ -1378,8 +1384,7 @@ class ZendeskWizard(QMainWindow):
             if row < len(self._work_items_cache):
                 item = self._work_items_cache[row]
 
-                if (item.get('is_system', False) or
-                        item.get('is_reserved', False)):
+                if item.get('is_system', False):
                     system_skipped += 1
                     continue
 
@@ -1431,15 +1436,14 @@ class ZendeskWizard(QMainWindow):
         self.lbl_will_translate.setStyleSheet(style)
 
     def run_connect(self):
-        subdomain = self.txt_subdomain.text().strip()
-        email = self.txt_email.text().strip()
-        token = self.txt_token.text().strip()
         backup = self.txt_backup.text().strip()
 
-        if not subdomain or not email or not token:
-            QMessageBox.warning(
-                self, "Warning", "Please fill in all credential fields."
-            )
+        try:
+            subdomain = validate_subdomain(self.txt_subdomain.text())
+            email = validate_email(self.txt_email.text())
+            token = validate_token(self.txt_token.text())
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid Input", str(e))
             return
 
         if not self.state_manager.try_transition(AppState.CONNECTING):
@@ -1574,7 +1578,7 @@ class ZendeskWizard(QMainWindow):
         self.log_msg(f"HC Sections: {stats.get('valid_sects', 0)}")
         self.log_msg(f"HC Articles: {stats.get('valid_arts', 0)}")
         self.log_msg("-" * 50)
-        self.log_msg(f"TOTAL ITEMS: {len(self._work_items_cache)}")
+        self.log_msg(f"TOTAL ITEMS: {len(self.controller.work_items)}")
         self.log_msg(f"System Fields: {stats.get('system_excluded', 0)}")
         self.log_msg("=" * 50)
 
@@ -1614,7 +1618,7 @@ class ZendeskWizard(QMainWindow):
         # System items are always shown regardless of scan selection
 
     def populate_preview(self, preserve_selection: bool = True):
-        self._work_items_cache = list(self.controller.work_items)
+        self._work_items_cache = [dict(item) for item in self.controller.work_items]
         if not preserve_selection:
             self.txt_search_filter.blockSignals(True)
             self.txt_search_filter.clear()
@@ -1623,24 +1627,6 @@ class ZendeskWizard(QMainWindow):
         selection_state = None
         if preserve_selection:
             selection_state = self.preview_table.get_selection_state()
-
-        self.preview_table.set_filter_settings(
-            show_fields=self.chk_filter_fields.isChecked(),
-            show_forms=self.chk_filter_forms.isChecked(),
-            show_statuses=self.chk_filter_statuses.isChecked(),
-            show_user_fields=self.chk_filter_user_fields.isChecked(),
-            show_org_fields=self.chk_filter_org_fields.isChecked(),
-            show_groups=self.chk_filter_groups.isChecked(),
-            show_macros=self.chk_filter_macros.isChecked(),
-            show_triggers=self.chk_filter_triggers.isChecked(),
-            show_automations=self.chk_filter_automations.isChecked(),
-            show_views=self.chk_filter_views.isChecked(),
-            show_sla=self.chk_filter_sla.isChecked(),
-            show_hc_cats=self.chk_filter_hc_cats.isChecked(),
-            show_hc_sects=self.chk_filter_hc_sects.isChecked(),
-            show_hc_arts=self.chk_filter_hc_arts.isChecked(),
-            show_reserved=self.chk_filter_reserved.isChecked(),
-        )
 
         self.preview_table.start_async_load(
             self._work_items_cache,

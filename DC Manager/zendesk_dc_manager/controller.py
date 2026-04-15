@@ -25,7 +25,7 @@ from zendesk_dc_manager.config import (
 )
 from zendesk_dc_manager.api import ZendeskAPI
 from zendesk_dc_manager.translator import TranslationService
-from zendesk_dc_manager.types import TranslationStats
+from zendesk_dc_manager.types import TranslationStats, WorkItem
 
 
 DC_PLACEHOLDER_PATTERN = re.compile(r'\{\{dc\.([^}]+)\}\}')
@@ -135,7 +135,7 @@ class ZendeskController:
     def __init__(self):
         self.api: Optional[ZendeskAPI] = None
         self.translator: Optional[TranslationService] = None
-        self.work_items: List[Dict[str, Any]] = []
+        self.work_items: List[WorkItem] = []
         self.dc_map: Dict[str, Dict[str, Any]] = {}
         self.dc_name_map: Dict[str, str] = {}
         self.dc_by_name: Dict[str, Dict[str, Any]] = {}
@@ -591,15 +591,24 @@ class ZendeskController:
         api_method,
         obj_type: str,
         name_field: str = 'title',
-        raw_field: str = None,
-        description_key: str = None,
-        raw_description_key: str = None,
+        raw_field: Optional[str] = None,
+        fallback_name_field: Optional[str] = None,
+        fallback_raw_field: Optional[str] = None,
+        description_key: Optional[str] = None,
+        raw_description_key: Optional[str] = None,
         extra_func=None,
         is_system_func=None,
         progress_callback=None,
     ) -> int:
-        """Generic scanner for simple named objects without sub-items."""
+        """Generic scanner for simple named objects without sub-items.
+
+        If name_field is empty for an item, falls back to fallback_name_field
+        and writes to fallback_raw_field instead. Used for ticket forms where
+        display_name (end-user title) takes priority over name (admin title).
+        """
         raw_field = raw_field or f'raw_{name_field}'
+        if fallback_name_field and not fallback_raw_field:
+            fallback_raw_field = f'raw_{fallback_name_field}'
         count = 0
         try:
             if progress_callback:
@@ -615,7 +624,11 @@ class ZendeskController:
 
                 obj_id = item.get('id')
                 name = item.get(name_field, '')
-                raw = item.get(raw_field, name)
+                used_raw_field = raw_field
+                if not name and fallback_name_field:
+                    name = item.get(fallback_name_field, '')
+                    used_raw_field = fallback_raw_field
+                raw = item.get(used_raw_field, name)
                 is_system = is_system_func(item) if is_system_func else False
                 extra = extra_func(item) if extra_func else None
 
@@ -623,7 +636,7 @@ class ZendeskController:
                 kwargs = dict(
                     obj_type=obj_type,
                     obj_id=obj_id,
-                    field_name=name_field,
+                    field_name=used_raw_field,
                     current_value=name,
                     raw_value=raw,
                     is_system=is_system,
@@ -673,7 +686,7 @@ class ZendeskController:
         kwargs = dict(
             obj_type=obj_type,
             obj_id=obj_id,
-            field_name=description_key,
+            field_name=raw_key,
             current_value=desc,
             raw_value=raw_desc,
             is_system=is_system,
@@ -694,8 +707,8 @@ class ZendeskController:
         option_type: str,
         name_key: str = 'title',
         raw_key: str = 'raw_title',
-        description_key: str = None,
-        raw_description_key: str = None,
+        description_key: Optional[str] = None,
+        raw_description_key: Optional[str] = None,
         field_extra_func=None,
         option_extra_func=None,
         is_system_func=None,
@@ -742,7 +755,7 @@ class ZendeskController:
                 kwargs = dict(
                     obj_type=field_type,
                     obj_id=field_id,
-                    field_name=name_key,
+                    field_name=raw_key,
                     current_value=title,
                     raw_value=raw_title,
                     is_system=is_system,
@@ -901,10 +914,15 @@ class ZendeskController:
         return count, system_count
 
     def _scan_ticket_forms(self, log_signal, progress_callback=None) -> int:
-        """Scan ticket forms."""
+        """Scan ticket forms.
+
+        Targets display_name (end-user-facing title) via raw_display_name.
+        Falls back to name/raw_name for forms that have no display_name set.
+        """
         count = self._scan_named_objects(
             log_signal, self.api.get_ticket_forms, 'ticket_form',
-            name_field='name', raw_field='raw_name',
+            name_field='display_name', raw_field='raw_display_name',
+            fallback_name_field='name', fallback_raw_field='raw_name',
             progress_callback=progress_callback,
         )
         log_signal.emit(f"  Found {count} ticket forms")
@@ -1086,6 +1104,7 @@ class ZendeskController:
         source = SOURCE_NEW
         placeholder_source = 'proposed'
         already_linked = False
+        needs_locale_fix = False
 
         raw_is_dc = is_dc_placeholder(raw_value)
 
@@ -1101,7 +1120,9 @@ class ZendeskController:
             variants = dc_info.get('variants', {})
             # Try correct pt-BR locale (1176) first; fall back to 16 for DCs
             # created before the locale ID bug was fixed (16 = French, not PT).
-            pt_variant = variants.get(self.pt_locale_id) or variants.get(16)
+            _correct_pt = variants.get(self.pt_locale_id)
+            pt_variant = _correct_pt or variants.get(16)
+            needs_locale_fix = _correct_pt is None and variants.get(16) is not None
             if pt_variant:
                 pt_text = pt_variant.get('content', current_value)
             if self.en_locale_id in variants:
@@ -1138,7 +1159,9 @@ class ZendeskController:
                 already_linked = False
 
                 variants = existing_dc.get('variants', {})
-                pt_variant = variants.get(self.pt_locale_id) or variants.get(16)
+                _correct_pt = variants.get(self.pt_locale_id)
+                pt_variant = _correct_pt or variants.get(16)
+                needs_locale_fix = _correct_pt is None and variants.get(16) is not None
                 if pt_variant:
                     pt_text = pt_variant.get('content', current_value)
                 if self.en_locale_id in variants:
@@ -1183,10 +1206,10 @@ class ZendeskController:
             'en_source': SOURCE_ZENDESK_DC if en_text else SOURCE_NEW,
             'es_source': SOURCE_ZENDESK_DC if es_text else SOURCE_NEW,
             'is_system': is_system,
-            'is_reserved': is_system,
             'parent_id': parent_id,
             'placeholder_source': placeholder_source,
             'already_linked': already_linked,
+            'needs_locale_fix': needs_locale_fix,
         }
 
         if extra:
@@ -1314,7 +1337,7 @@ class ZendeskController:
 
         items_to_translate = [
             (i, item) for i, item in enumerate(self.work_items)
-            if not item.get('is_system') and not item.get('is_reserved')
+            if not item.get('is_system')
             and item.get('pt')
             and (
                 force
@@ -1327,7 +1350,6 @@ class ZendeskController:
             log_signal, progress_signal, items_to_translate,
             force_retranslate=force,
         )
-        stats.total = total
         return stats
 
     def perform_translation_for_indices(
@@ -1348,7 +1370,6 @@ class ZendeskController:
             for idx in selected_indices
             if idx < len(self.work_items)
             and not self.work_items[idx].get('is_system', False)
-            and not self.work_items[idx].get('is_reserved', False)
         ]
 
         system_skipped = len(selected_indices) - len(items_to_consider)
@@ -1461,12 +1482,21 @@ class ZendeskController:
         log_signal,
         result: Dict[str, Any]
     ) -> None:
-        """Batch-apply all queued field option updates (one GET+PUT per field)."""
+        """Batch-apply all queued field option updates (one GET+PUT per field).
+
+        Each entry in _deferred_option_updates is:
+            {(field_type, parent_id): {'updates': {value: placeholder}, 'items': [...]}}
+
+        On failure the associated items are moved from result['success'] to
+        result['failed'] so the final report is accurate.
+        """
         if not self._deferred_option_updates:
             return
-        for (field_type, parent_id), updates in self._deferred_option_updates.items():
+        for (field_type, parent_id), entry in self._deferred_option_updates.items():
             if self._should_stop():
                 break
+            updates = entry.get('updates', {})
+            queued_items = entry.get('items', [])
             try:
                 log_signal.emit(
                     f"  Batch updating {len(updates)} options "
@@ -1483,6 +1513,11 @@ class ZendeskController:
                 log_signal.emit(
                     f"  Error batching options for {field_type} {parent_id}: {e}"
                 )
+                # Move prematurely-counted successes to failed
+                for failed_item in queued_items:
+                    if failed_item in result['success']:
+                        result['success'].remove(failed_item)
+                    result['failed'].append(failed_item)
 
     def _refresh_dc_cache(self):
         """Refresh the DC cache from Zendesk."""
@@ -1672,7 +1707,8 @@ class ZendeskController:
                 try:
                     self._update_object_with_dc(
                         obj_type, obj_id, item.get('field_name'),
-                        placeholder, parent_id, option_value, log_signal
+                        placeholder, parent_id, option_value, log_signal,
+                        item=item,
                     )
 
                     item['dc_id'] = dc_id
@@ -1702,7 +1738,8 @@ class ZendeskController:
         placeholder: str,
         parent_id: int,
         option_value: str,
-        log_signal
+        log_signal,
+        item: Dict[str, Any] = None,
     ):
         """Update a Zendesk object to use a DC placeholder."""
         try:
@@ -1716,7 +1753,12 @@ class ZendeskController:
                     raise Exception("No option_value for ticket_field_option")
                 if self._deferred_option_updates is not None:
                     key = ('ticket_field', parent_id)
-                    self._deferred_option_updates.setdefault(key, {})[option_value] = placeholder
+                    entry = self._deferred_option_updates.setdefault(
+                        key, {'updates': {}, 'items': []}
+                    )
+                    entry['updates'][option_value] = placeholder
+                    if item is not None:
+                        entry['items'].append(item)
                     log_signal.emit(f"    Queued for batch update (field {parent_id})")
                 else:
                     log_signal.emit(f"    Updating via field, value='{option_value}'")
@@ -1742,7 +1784,12 @@ class ZendeskController:
                     raise Exception("No option_value for user_field_option")
                 if self._deferred_option_updates is not None:
                     key = ('user_field', parent_id)
-                    self._deferred_option_updates.setdefault(key, {})[option_value] = placeholder
+                    entry = self._deferred_option_updates.setdefault(
+                        key, {'updates': {}, 'items': []}
+                    )
+                    entry['updates'][option_value] = placeholder
+                    if item is not None:
+                        entry['items'].append(item)
                     log_signal.emit(f"    Queued for batch update (field {parent_id})")
                 else:
                     self.api.update_user_field_option_via_field(
@@ -1761,7 +1808,12 @@ class ZendeskController:
                     raise Exception("No option_value for organization_field_option")
                 if self._deferred_option_updates is not None:
                     key = ('organization_field', parent_id)
-                    self._deferred_option_updates.setdefault(key, {})[option_value] = placeholder
+                    entry = self._deferred_option_updates.setdefault(
+                        key, {'updates': {}, 'items': []}
+                    )
+                    entry['updates'][option_value] = placeholder
+                    if item is not None:
+                        entry['items'].append(item)
                     log_signal.emit(f"    Queued for batch update (field {parent_id})")
                 else:
                     self.api.update_organization_field_option_via_field(

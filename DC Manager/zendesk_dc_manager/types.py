@@ -3,10 +3,49 @@ Type definitions and data structures for Zendesk DC Manager.
 """
 
 import threading
-from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Optional, Callable
+from typing import Optional, Callable, Dict, Any
+
+try:
+    from typing import TypedDict
+
+    class WorkItem(TypedDict, total=False):
+        """A single translatable item discovered during a Zendesk scan."""
+        type: str
+        type_display: str
+        obj_id: int
+        field_name: str
+        current_value: str
+        raw_value: str
+        action: str
+        dc_placeholder: str
+        dc_id: Optional[int]
+        context: str
+        pt: str
+        en: str
+        es: str
+        source: str
+        pt_source: str
+        en_source: str
+        es_source: str
+        is_system: bool
+        parent_id: Optional[int]
+        placeholder_source: str
+        already_linked: bool
+        needs_locale_fix: bool
+        # optional extra fields merged in by scan methods
+        field_type: str
+        field_key: str
+        option_value: str
+        parent_name: str
+        status_category: str
+        is_default: bool
+        force_update: bool
+
+except ImportError:
+    # Python < 3.8 fallback — treat as plain dict alias
+    WorkItem = Dict[str, Any]  # type: ignore
 
 from zendesk_dc_manager.config import logger
 
@@ -99,25 +138,6 @@ class StateManager:
                 self._ui_callback(state)
             except Exception as e:
                 logger.warning(f"UI callback error: {e}")
-
-    @contextmanager
-    def transition(self, new_state: AppState):
-        with self._lock:
-            if self._state != AppState.IDLE:
-                raise RuntimeError(
-                    f"Cannot start {new_state.name} "
-                    f"while in {self._state.name}"
-                )
-            self._state = new_state
-
-        self._notify_ui(new_state)
-
-        try:
-            yield
-        finally:
-            with self._lock:
-                self._state = AppState.IDLE
-            self._notify_ui(AppState.IDLE)
 
     def force_reset(self):
         with self._lock:

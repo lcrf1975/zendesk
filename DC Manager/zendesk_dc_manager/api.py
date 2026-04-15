@@ -124,7 +124,10 @@ class ZendeskAPI:
                     logger.warning(
                         f"Rate limited. Waiting {retry_after} seconds..."
                     )
-                    time.sleep(retry_after)
+                    for _ in range(max(1, retry_after)):
+                        if self._should_stop():
+                            raise Exception("Operation canceled")
+                        time.sleep(1)
                     continue
 
                 # Don't retry 404 errors unless explicitly requested

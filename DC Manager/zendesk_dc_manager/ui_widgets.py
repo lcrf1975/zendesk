@@ -6,7 +6,8 @@ This module provides:
 - DarkConsoleWidget: Log output console with dark theme
 - EmbeddedStatusBar: Progress bar with cancel button and ETA
 - TableContainer: Container for table widget
-- PreviewTableWidget: Async-loading table for preview data
+- WorkItemTableModel: QAbstractTableModel backing PreviewTableWidget
+- PreviewTableWidget: QTableView for preview data
 """
 
 import threading
@@ -14,13 +15,13 @@ from typing import Optional, List, Dict, Any
 
 from PyQt6.QtCore import (
     Qt, QTimer, pyqtSignal, QThread, QElapsedTimer,
+    QAbstractTableModel, QModelIndex,
 )
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QProgressBar, QTableWidget,
-    QTableWidgetItem, QHeaderView, QCheckBox,
-    QAbstractItemView, QTextEdit, QStyledItemDelegate,
-    QStyleOptionViewItem, QStyle,
+    QPushButton, QProgressBar, QTableView,
+    QHeaderView, QAbstractItemView, QTextEdit,
+    QStyledItemDelegate, QStyleOptionViewItem, QStyle,
 )
 from PyQt6.QtGui import QBrush, QFontMetrics
 
@@ -412,7 +413,7 @@ class EmbeddedStatusBar(QWidget):
 class TableContainer(QWidget):
     """Container widget for the table with loading indicator."""
 
-    def __init__(self, table: QTableWidget, parent=None):
+    def __init__(self, table: QWidget, parent=None):
         super().__init__(parent)
 
         layout = QVBoxLayout(self)
@@ -424,16 +425,19 @@ class TableContainer(QWidget):
 
 
 # ==============================================================================
-# PREVIEW TABLE WIDGET
+# CELL COLOR DELEGATE
 # ==============================================================================
 
 
 class _CellColorDelegate(QStyledItemDelegate):
-    """Forces Qt to honour setBackground()/setForeground() on table cells
-    even when a QSS ::item rule is active (which normally suppresses them)."""
+    """Forces Qt to honour BackgroundRole/ForegroundRole on table cells
+    even when a QSS ::item rule is active (which normally suppresses them).
+    Column 0 (checkbox) is always painted by the default delegate."""
 
     def initStyleOption(self, option, index):
         super().initStyleOption(option, index)
+        if index.column() == 0:
+            return
         bg = index.data(Qt.ItemDataRole.BackgroundRole)
         if bg is not None:
             option.backgroundBrush = (
@@ -449,14 +453,16 @@ class _CellColorDelegate(QStyledItemDelegate):
             option.palette = palette
 
     def paint(self, painter, option, index):
+        # Always let Qt render the checkbox column natively
+        if index.column() == 0:
+            super().paint(painter, option, index)
+            return
+
         bg = index.data(Qt.ItemDataRole.BackgroundRole)
         if bg is None:
             super().paint(painter, option, index)
             return
 
-        # Qt6's QStyleSheetStyle repaints the background during drawControl
-        # even after initStyleOption sets backgroundBrush, overriding it with
-        # QSS/alternating colors. We bypass this by drawing manually.
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
 
@@ -489,13 +495,18 @@ class _CellColorDelegate(QStyledItemDelegate):
         painter.restore()
 
 
-class PreviewTableWidget(QTableWidget):
-    """Table widget for preview data with async loading."""
+# ==============================================================================
+# WORK ITEM TABLE MODEL
+# ==============================================================================
 
-    stats_updated = pyqtSignal(dict)
-    cell_edited = pyqtSignal(int, str, str, str)
-    selection_changed = pyqtSignal(int)
-    loading_finished = pyqtSignal()
+
+class WorkItemTableModel(QAbstractTableModel):
+    """Model backing PreviewTableWidget.
+
+    Row index == data index into the underlying list.
+    Colors and tooltips are derived from item data on demand,
+    so no QTableWidgetItem allocations are needed.
+    """
 
     COLUMNS = [
         ("select", "✓", 40),
@@ -509,42 +520,325 @@ class PreviewTableWidget(QTableWidget):
         ("action", "Action", 80),
     ]
 
+    COL_SELECT = 0
+    COL_CONTEXT = 1
+    COL_TYPE = 2
+    COL_ID = 3
+    COL_PLACEHOLDER = 4
+    COL_PT = 5
+    COL_EN = 6
+    COL_ES = 7
+    COL_ACTION = 8
+
+    _SRC_KEY = {COL_PT: 'pt_source', COL_EN: 'en_source', COL_ES: 'es_source'}
+    _FIELD_KEY = {COL_PT: 'pt', COL_EN: 'en', COL_ES: 'es'}
+
+    # Emitted when a user edits a cell: (data_index, field, value, source)
+    cell_edited = pyqtSignal(int, str, str, str)
+    # Emitted when a checkbox is toggled
+    selection_toggled = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._data: List[Dict[str, Any]] = []
+        self._selection: Dict[int, bool] = {}
+        self._search_cache: Dict[int, str] = {}
+
+    # ------------------------------------------------------------------
+    # Data loading
+    # ------------------------------------------------------------------
+
+    def load_data(
+        self,
+        data: List[Dict[str, Any]],
+        selection_state: Dict[int, bool] = None,
+    ):
+        self.beginResetModel()
+        self._data = data
+        self._selection = selection_state.copy() if selection_state else {}
+        self._search_cache = {
+            i: self._build_search_string(item)
+            for i, item in enumerate(data)
+        }
+        self.endResetModel()
+
+    def update_item(self, data_index: int, item: Dict[str, Any] = None):
+        """Refresh a single row (update search cache + notify view)."""
+        if not (0 <= data_index < len(self._data)):
+            return
+        if item is not None and item is not self._data[data_index]:
+            self._data[data_index].update(item)
+        self._search_cache[data_index] = self._build_search_string(
+            self._data[data_index]
+        )
+        top_left = self.index(data_index, 0)
+        bottom_right = self.index(data_index, len(self.COLUMNS) - 1)
+        self.dataChanged.emit(top_left, bottom_right)
+
+    # ------------------------------------------------------------------
+    # QAbstractTableModel interface
+    # ------------------------------------------------------------------
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self._data)
+
+    def columnCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self.COLUMNS)
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if (
+            orientation == Qt.Orientation.Horizontal
+            and role == Qt.ItemDataRole.DisplayRole
+        ):
+            return self.COLUMNS[section][1]
+        return None
+
+    def flags(self, index):
+        if not index.isValid() or index.row() >= len(self._data):
+            return Qt.ItemFlag.NoItemFlags
+        col = index.column()
+        item = self._data[index.row()]
+        is_system = item.get('is_system', False)
+
+        base = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+
+        if col == self.COL_SELECT:
+            if is_system:
+                return base  # visible but not checkable
+            return base | Qt.ItemFlag.ItemIsUserCheckable
+
+        if col in (self.COL_PT, self.COL_EN, self.COL_ES) and not is_system:
+            return base | Qt.ItemFlag.ItemIsEditable
+
+        return base
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or index.row() >= len(self._data):
+            return None
+        row = index.row()
+        col = index.column()
+        item = self._data[row]
+        is_system = item.get('is_system', False)
+
+        if role == Qt.ItemDataRole.DisplayRole:
+            return self._display(col, item, is_system)
+
+        if role == Qt.ItemDataRole.CheckStateRole and col == self.COL_SELECT:
+            checked = self._selection.get(row, False)
+            return Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+
+        if role == Qt.ItemDataRole.BackgroundRole:
+            return self._background(col, item, is_system)
+
+        if role == Qt.ItemDataRole.ForegroundRole:
+            return self._foreground(col, item, is_system)
+
+        if role == Qt.ItemDataRole.ToolTipRole:
+            return self._tooltip(col, item, is_system)
+
+        return None
+
+    def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
+        if not index.isValid() or index.row() >= len(self._data):
+            return False
+        row = index.row()
+        col = index.column()
+        item = self._data[row]
+
+        if role == Qt.ItemDataRole.CheckStateRole and col == self.COL_SELECT:
+            if item.get('is_system', False):
+                return False
+            checked = (
+                value == Qt.CheckState.Checked
+                or (isinstance(value, int) and value == Qt.CheckState.Checked.value)
+            )
+            self._selection[row] = checked
+            self.dataChanged.emit(index, index, [Qt.ItemDataRole.CheckStateRole])
+            self.selection_toggled.emit()
+            return True
+
+        if role == Qt.ItemDataRole.EditRole and col in self._FIELD_KEY:
+            if item.get('is_system', False):
+                return False
+            field = self._FIELD_KEY[col]
+            item[field] = value
+            item[field + '_source'] = SOURCE_MANUAL
+            self._search_cache[row] = self._build_search_string(item)
+            self.dataChanged.emit(
+                index, index,
+                [role, Qt.ItemDataRole.BackgroundRole, Qt.ItemDataRole.ForegroundRole],
+            )
+            self.cell_edited.emit(row, field, value, SOURCE_MANUAL)
+            return True
+
+        return False
+
+    # ------------------------------------------------------------------
+    # Display helpers
+    # ------------------------------------------------------------------
+
+    def _display(self, col, item, is_system):
+        if col == self.COL_SELECT:
+            return None
+        if col == self.COL_CONTEXT:
+            return item.get('context', '')
+        if col == self.COL_TYPE:
+            return item.get('type_display', item.get('type', ''))
+        if col == self.COL_ID:
+            return str(item.get('obj_id', ''))
+        if col == self.COL_PLACEHOLDER:
+            return item.get('dc_placeholder', '') or ''
+        if col == self.COL_PT:
+            return item.get('pt', '')
+        if col == self.COL_EN:
+            return item.get('en', '')
+        if col == self.COL_ES:
+            return item.get('es', '')
+        if col == self.COL_ACTION:
+            return "SYSTEM" if is_system else item.get('action', '')
+        return None
+
+    def _background(self, col, item, is_system):
+        if col in (self.COL_PT, self.COL_EN, self.COL_ES):
+            src = SOURCE_RESERVED if is_system else item.get(
+                self._SRC_KEY[col], SOURCE_NEW
+            )
+            return _get_source_color(src)
+        if col == self.COL_PLACEHOLDER:
+            ph = item.get('dc_placeholder', '') or ''
+            if ph:
+                return _get_placeholder_color(
+                    item.get('placeholder_source', 'proposed')
+                )
+        return None
+
+    def _foreground(self, col, item, is_system):
+        if col in (self.COL_PT, self.COL_EN, self.COL_ES):
+            src = SOURCE_RESERVED if is_system else item.get(
+                self._SRC_KEY[col], SOURCE_NEW
+            )
+            return _get_text_color(src)
+        if col == self.COL_PLACEHOLDER:
+            ph = item.get('dc_placeholder', '') or ''
+            if ph:
+                return _get_placeholder_text_color(
+                    item.get('placeholder_source', 'proposed')
+                )
+        if col == self.COL_ACTION and is_system:
+            return _get_text_color(SOURCE_RESERVED)
+        return None
+
+    def _tooltip(self, col, item, is_system):
+        if is_system and col in (
+            self.COL_SELECT, self.COL_PT, self.COL_EN, self.COL_ES
+        ):
+            return "System/reserved item - cannot be modified"
+        if col == self.COL_PLACEHOLDER:
+            ph = item.get('dc_placeholder', '') or ''
+            if ph:
+                src = item.get('placeholder_source', 'proposed')
+                return (
+                    f"Existing DC: {ph}"
+                    if src == 'existing'
+                    else f"Proposed: {ph}"
+                )
+        if col == self.COL_ACTION and item.get('needs_locale_fix'):
+            return (
+                "Warning: PT-BR content was read from locale ID 16 (French).\n"
+                "This DC was created with an incorrect locale assignment.\n"
+                "Applying will re-save variants with the correct locale IDs."
+            )
+        return None
+
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
+
+    def _build_search_string(self, item: Dict[str, Any]) -> str:
+        return '|'.join([
+            item.get('context', ''),
+            item.get('type_display', item.get('type', '')),
+            str(item.get('obj_id', '')),
+            item.get('dc_placeholder', '') or '',
+            item.get('pt', '') or '',
+            item.get('en', '') or '',
+            item.get('es', '') or '',
+        ]).lower()
+
+    # ------------------------------------------------------------------
+    # Selection helpers (used by PreviewTableWidget)
+    # ------------------------------------------------------------------
+
+    def get_selected_count(self) -> int:
+        return sum(1 for v in self._selection.values() if v)
+
+    def get_selected_rows(self) -> List[int]:
+        return [idx for idx, sel in self._selection.items() if sel]
+
+    def get_selection_state(self) -> Dict[int, bool]:
+        return self._selection.copy()
+
+    def _emit_selection_range(self, indices: List[int]):
+        """Emit dataChanged in contiguous blocks to avoid invalidating rows
+        that were not actually changed (e.g. sparse filtered selections)."""
+        if not indices:
+            return
+        sorted_idx = sorted(indices)
+        role = [Qt.ItemDataRole.CheckStateRole]
+        block_start = sorted_idx[0]
+        prev = sorted_idx[0]
+        for i in sorted_idx[1:]:
+            if i != prev + 1:
+                self.dataChanged.emit(
+                    self.index(block_start, self.COL_SELECT),
+                    self.index(prev, self.COL_SELECT),
+                    role,
+                )
+                block_start = i
+            prev = i
+        self.dataChanged.emit(
+            self.index(block_start, self.COL_SELECT),
+            self.index(prev, self.COL_SELECT),
+            role,
+        )
+        self.selection_toggled.emit()
+
+
+# ==============================================================================
+# PREVIEW TABLE WIDGET  (QTableView backed by WorkItemTableModel)
+# ==============================================================================
+
+
+class PreviewTableWidget(QTableView):
+    """Table view for preview data, backed by WorkItemTableModel.
+
+    Public API is intentionally identical to the previous QTableWidget
+    subclass so that callers in ui_main.py need no changes.
+    """
+
+    stats_updated = pyqtSignal(dict)
+    cell_edited = pyqtSignal(int, str, str, str)
+    selection_changed = pyqtSignal(int)
+    loading_finished = pyqtSignal()
+
+    COLUMNS = WorkItemTableModel.COLUMNS
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self._data: List[Dict[str, Any]] = []
-        self._loading = False
-        self._load_timer: Optional[QTimer] = None
-        self._load_index = 0
-        self._batch_size = UI_CONFIG.TABLE_BATCH_SIZE
+        self._model = WorkItemTableModel(self)
+        self._model.cell_edited.connect(self.cell_edited)
+        self._model.selection_toggled.connect(
+            lambda: self.selection_changed.emit(self._model.get_selected_count())
+        )
+        self.setModel(self._model)
+        self._setup_view()
 
-        self._selection_state: Dict[int, bool] = {}
-        self._search_cache: Dict[int, str] = {}  # data_index -> lowercased searchable text
+    # ------------------------------------------------------------------
+    # Setup
+    # ------------------------------------------------------------------
 
-        # Filter settings
-        self._filter_fields = True
-        self._filter_forms = True
-        self._filter_statuses = True
-        self._filter_user_fields = True
-        self._filter_org_fields = True
-        self._filter_groups = True
-        self._filter_macros = True
-        self._filter_triggers = True
-        self._filter_automations = True
-        self._filter_views = True
-        self._filter_sla = True
-        self._filter_hc_cats = True
-        self._filter_hc_sects = True
-        self._filter_hc_arts = True
-        self._filter_reserved = True
-
-        self._setup_table()
-
-    def _setup_table(self):
-        """Initialize table structure and styling."""
-        self.setColumnCount(len(self.COLUMNS))
-        self.setHorizontalHeaderLabels([col[1] for col in self.COLUMNS])
-
+    def _setup_view(self):
         header = self.horizontalHeader()
         for i, (_, _, width) in enumerate(self.COLUMNS):
             if width > 0:
@@ -561,313 +855,62 @@ class PreviewTableWidget(QTableWidget):
         )
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.verticalHeader().setVisible(False)
+        self.verticalHeader().setDefaultSectionSize(UI_CONFIG.TABLE_ROW_HEIGHT)
         self.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
-
-        self.cellChanged.connect(self._on_cell_changed)
-
-        # Apply delegate so setBackground()/setForeground() show through QSS
         self.setItemDelegate(_CellColorDelegate(self))
 
-    def set_filter_settings(
-        self,
-        show_fields: bool = True,
-        show_forms: bool = True,
-        show_statuses: bool = True,
-        show_user_fields: bool = True,
-        show_org_fields: bool = True,
-        show_groups: bool = True,
-        show_macros: bool = True,
-        show_triggers: bool = True,
-        show_automations: bool = True,
-        show_views: bool = True,
-        show_sla: bool = True,
-        show_hc_cats: bool = True,
-        show_hc_sects: bool = True,
-        show_hc_arts: bool = True,
-        show_reserved: bool = True,
-    ):
-        """Set filter settings before loading data."""
-        self._filter_fields = show_fields
-        self._filter_forms = show_forms
-        self._filter_statuses = show_statuses
-        self._filter_user_fields = show_user_fields
-        self._filter_org_fields = show_org_fields
-        self._filter_groups = show_groups
-        self._filter_macros = show_macros
-        self._filter_triggers = show_triggers
-        self._filter_automations = show_automations
-        self._filter_views = show_views
-        self._filter_sla = show_sla
-        self._filter_hc_cats = show_hc_cats
-        self._filter_hc_sects = show_hc_sects
-        self._filter_hc_arts = show_hc_arts
-        self._filter_reserved = show_reserved
+    # ------------------------------------------------------------------
+    # Compatibility shim: expose _data so ui_main.py can do len(table._data)
+    # ------------------------------------------------------------------
+
+    @property
+    def _data(self) -> List[Dict[str, Any]]:
+        return self._model._data
+
+    # ------------------------------------------------------------------
+    # Loading
+    # ------------------------------------------------------------------
 
     def start_async_load(
         self,
         data: List[Dict[str, Any]],
         mode: str = "preview",
         batch_size: int = None,
-        selection_state: Dict[int, bool] = None
+        selection_state: Dict[int, bool] = None,
     ):
-        """Start loading data asynchronously."""
-        self.cancel_loading()
-
-        self._data = data
-        self._load_index = 0
-        self._batch_size = batch_size or UI_CONFIG.TABLE_BATCH_SIZE
-        self._loading = True
-
-        if selection_state is not None:
-            self._selection_state = selection_state.copy()
-        else:
-            self._selection_state = {}
-
-        self._search_cache = {}
-        self.setRowCount(0)
-        self.blockSignals(True)
-
-        self._load_timer = QTimer()
-        self._load_timer.timeout.connect(self._load_batch)
-        self._load_timer.start(UI_CONFIG.TABLE_INSERT_INTERVAL_MS)
-
-    def _load_batch(self):
-        """Load a batch of rows."""
-        if not self._loading or self._load_index >= len(self._data):
-            self._finish_loading()
-            return
-
-        end_index = min(
-            self._load_index + UI_CONFIG.TABLE_INSERT_BATCH,
-            len(self._data)
-        )
-
-        for i in range(self._load_index, end_index):
-            self._add_row(i, self._data[i])
-
-        self._load_index = end_index
-
-    def _build_search_string(self, item: Dict[str, Any]) -> str:
-        """Build a lowercased searchable string for a work item."""
-        return '|'.join([
-            item.get('context', ''),
-            item.get('type_display', item.get('type', '')),
-            str(item.get('obj_id', '')),
-            item.get('dc_placeholder', '') or '',
-            item.get('pt', '') or '',
-            item.get('en', '') or '',
-            item.get('es', '') or '',
-        ]).lower()
-
-    def _add_row(self, data_index: int, item: Dict[str, Any]):
-        """Add a single row to the table."""
-        row = self.rowCount()
-        self.insertRow(row)
-        self.setRowHeight(row, UI_CONFIG.TABLE_ROW_HEIGHT)
-
-        is_reserved = (
-            item.get('is_reserved', False) or item.get('is_system', False)
-        )
-
-        # Column 0: Selection checkbox
-        chk_widget = QWidget()
-        chk_layout = QHBoxLayout(chk_widget)
-        chk_layout.setContentsMargins(0, 0, 0, 0)
-        chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        chk = QCheckBox()
-        chk.setChecked(self._selection_state.get(data_index, False))
-        chk.stateChanged.connect(
-            lambda state, r=row: self._on_selection_changed(r, state)
-        )
-        if is_reserved:
-            chk.setEnabled(False)
-            chk.setToolTip("System/reserved items cannot be modified")
-        chk_layout.addWidget(chk)
-        self.setCellWidget(row, 0, chk_widget)
-
-        # Column 1: Context
-        context_item = QTableWidgetItem(item.get('context', ''))
-        context_item.setFlags(
-            context_item.flags() & ~Qt.ItemFlag.ItemIsEditable
-        )
-        self.setItem(row, 1, context_item)
-
-        # Column 2: Type
-        type_item = QTableWidgetItem(
-            item.get('type_display', item.get('type', ''))
-        )
-        type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        self.setItem(row, 2, type_item)
-
-        # Column 3: ID
-        id_item = QTableWidgetItem(str(item.get('obj_id', '')))
-        id_item.setFlags(id_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        self.setItem(row, 3, id_item)
-
-        # Column 4: Placeholder
-        placeholder_text = item.get('dc_placeholder', '') or ''
-        placeholder_source = item.get('placeholder_source', 'proposed')
-        placeholder_item = QTableWidgetItem(placeholder_text)
-        placeholder_item.setFlags(
-            placeholder_item.flags() & ~Qt.ItemFlag.ItemIsEditable
-        )
-
-        if placeholder_text:
-            placeholder_item.setBackground(
-                QBrush(_get_placeholder_color(placeholder_source))
-            )
-            placeholder_item.setForeground(
-                QBrush(_get_placeholder_text_color(placeholder_source))
-            )
-
-            if placeholder_source == 'existing':
-                placeholder_item.setToolTip(f"Existing DC: {placeholder_text}")
-            else:
-                placeholder_item.setToolTip(f"Proposed: {placeholder_text}")
-
-        self.setItem(row, 4, placeholder_item)
-
-        # Determine source colors
-        if is_reserved:
-            pt_source = SOURCE_RESERVED
-            en_source = SOURCE_RESERVED
-            es_source = SOURCE_RESERVED
-        else:
-            pt_source = item.get('pt_source', SOURCE_NEW)
-            en_source = item.get('en_source', SOURCE_NEW)
-            es_source = item.get('es_source', SOURCE_NEW)
-
-        # Column 5: Portuguese (PT)
-        pt_text = item.get('pt', '')
-        pt_item = QTableWidgetItem(pt_text)
-        pt_item.setBackground(QBrush(_get_source_color(pt_source)))
-        pt_item.setForeground(QBrush(_get_text_color(pt_source)))
-        if is_reserved:
-            pt_item.setFlags(pt_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            pt_item.setToolTip("System/reserved item - cannot be modified")
-        self.setItem(row, 5, pt_item)
-
-        # Column 6: English (EN)
-        en_text = item.get('en', '')
-        en_item = QTableWidgetItem(en_text)
-        en_item.setBackground(QBrush(_get_source_color(en_source)))
-        en_item.setForeground(QBrush(_get_text_color(en_source)))
-        if is_reserved:
-            en_item.setFlags(en_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            en_item.setToolTip("System/reserved item - cannot be modified")
-        self.setItem(row, 6, en_item)
-
-        # Column 7: Spanish (ES)
-        es_text = item.get('es', '')
-        es_item = QTableWidgetItem(es_text)
-        es_item.setBackground(QBrush(_get_source_color(es_source)))
-        es_item.setForeground(QBrush(_get_text_color(es_source)))
-        if is_reserved:
-            es_item.setFlags(es_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            es_item.setToolTip("System/reserved item - cannot be modified")
-        self.setItem(row, 7, es_item)
-
-        # Column 8: Action
-        action_text = "SYSTEM" if is_reserved else item.get('action', '')
-        action_item = QTableWidgetItem(action_text)
-        action_item.setFlags(action_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        if is_reserved:
-            action_item.setForeground(QBrush(_get_text_color(SOURCE_RESERVED)))
-        self.setItem(row, 8, action_item)
-
-        # Store data index in type column for reference
-        if self.item(row, 2):
-            self.item(row, 2).setData(Qt.ItemDataRole.UserRole, data_index)
-
-        self._search_cache[data_index] = self._build_search_string(item)
-
-    def _finish_loading(self):
-        """Finish the loading process."""
-        self._loading = False
-        if self._load_timer:
-            self._load_timer.stop()
-            self._load_timer = None
-
-        self.blockSignals(False)
+        """Load data into the model.  QTableView virtualises rendering so
+        no timer-based batching is needed."""
+        self._model.load_data(data, selection_state)
         self._update_stats()
-        self.loading_finished.emit()
+        # Defer loading_finished so callers can connect after this call
+        QTimer.singleShot(0, self.loading_finished.emit)
 
     def cancel_loading(self):
-        """Cancel ongoing loading."""
-        self._loading = False
-        if self._load_timer:
-            self._load_timer.stop()
-            self._load_timer = None
-        self.blockSignals(False)
+        pass  # nothing to cancel
 
-    def _on_cell_changed(self, row: int, column: int):
-        """Handle cell edit."""
-        if self._loading:
-            return
-
-        field_map = {5: 'pt', 6: 'en', 7: 'es'}
-        if column not in field_map:
-            return
-
-        field = field_map[column]
-        item = self.item(row, column)
-        if not item:
-            return
-
-        value = item.text()
-
-        item.setBackground(QBrush(_get_source_color(SOURCE_MANUAL)))
-        item.setForeground(QBrush(_get_text_color(SOURCE_MANUAL)))
-
-        type_item = self.item(row, 2)
-        if type_item:
-            data_index = type_item.data(Qt.ItemDataRole.UserRole)
-            if data_index is not None:
-                self.cell_edited.emit(data_index, field, value, SOURCE_MANUAL)
-                if data_index < len(self._data):
-                    self._search_cache[data_index] = self._build_search_string(
-                        self._data[data_index]
-                    )
-
-    def _on_selection_changed(self, row: int, state: int):
-        """Handle selection checkbox change."""
-        type_item = self.item(row, 2)
-        if type_item:
-            data_index = type_item.data(Qt.ItemDataRole.UserRole)
-            if data_index is not None:
-                self._selection_state[data_index] = (
-                    state == Qt.CheckState.Checked.value
-                )
-
-        self.selection_changed.emit(self.get_selected_count())
+    # ------------------------------------------------------------------
+    # Stats
+    # ------------------------------------------------------------------
 
     def _update_stats(self):
-        """Update and emit statistics."""
+        data = self._model._data
         stats = {
-            'total': len(self._data),
+            'total': len(data),
             'items_from_dc': 0,
             'items_translated': 0,
             'items_failed': 0,
             'items_attention': 0,
             'items_reserved': 0,
             'items_pending': 0,
-            'selected_count': self.get_selected_count(),
+            'selected_count': self._model.get_selected_count(),
         }
 
-        # Define which sources count as "translated" (have a result)
         translated_sources = frozenset({
-            SOURCE_TRANSLATED,
-            SOURCE_CACHE,
-            SOURCE_MANUAL,
-            SOURCE_ATTENTION,
+            SOURCE_TRANSLATED, SOURCE_CACHE, SOURCE_MANUAL, SOURCE_ATTENTION,
         })
 
-        for item in self._data:
-            is_reserved = (
-                item.get('is_reserved', False) or item.get('is_system', False)
-            )
-
-            if is_reserved:
+        for item in data:
+            if item.get('is_system', False):
                 stats['items_reserved'] += 1
                 continue
 
@@ -875,24 +918,25 @@ class PreviewTableWidget(QTableWidget):
             en_source = item.get('en_source', SOURCE_NEW)
             es_source = item.get('es_source', SOURCE_NEW)
 
-            # Check if item came from existing DC (already has translations)
             if source == SOURCE_ZENDESK_DC:
                 stats['items_from_dc'] += 1
-            # Check for any translation failures
             elif en_source == SOURCE_FAILED or es_source == SOURCE_FAILED:
                 stats['items_failed'] += 1
-            # Check if any translation result is identical to PT (needs review)
             elif en_source == SOURCE_ATTENTION or es_source == SOURCE_ATTENTION:
                 stats['items_attention'] += 1
-            # Check if both EN and ES are translated
-            elif (en_source in translated_sources and
-                  es_source in translated_sources):
+            elif (
+                en_source in translated_sources
+                and es_source in translated_sources
+            ):
                 stats['items_translated'] += 1
-            # Otherwise it's still pending
             else:
                 stats['items_pending'] += 1
 
         self.stats_updated.emit(stats)
+
+    # ------------------------------------------------------------------
+    # Filtering
+    # ------------------------------------------------------------------
 
     def apply_filters(
         self,
@@ -913,23 +957,6 @@ class PreviewTableWidget(QTableWidget):
         show_reserved: bool = True,
         search_text: str = '',
     ):
-        """Apply visibility filters to rows based on object type and search text."""
-        self._filter_fields = show_fields
-        self._filter_forms = show_forms
-        self._filter_statuses = show_statuses
-        self._filter_user_fields = show_user_fields
-        self._filter_org_fields = show_org_fields
-        self._filter_groups = show_groups
-        self._filter_macros = show_macros
-        self._filter_triggers = show_triggers
-        self._filter_automations = show_automations
-        self._filter_views = show_views
-        self._filter_sla = show_sla
-        self._filter_hc_cats = show_hc_cats
-        self._filter_hc_sects = show_hc_sects
-        self._filter_hc_arts = show_hc_arts
-        self._filter_reserved = show_reserved
-
         TYPE_VISIBLE = {
             'ticket_field': show_fields,
             'ticket_field_option': show_fields,
@@ -952,226 +979,101 @@ class PreviewTableWidget(QTableWidget):
 
         search = search_text.strip().lower()
 
-        for row in range(self.rowCount()):
-            type_item = self.item(row, 2)
-            if not type_item:
-                continue
+        for row in range(self._model.rowCount()):
+            item = self._model._data[row]
+            is_system = item.get('is_system', False)
 
-            data_index = type_item.data(Qt.ItemDataRole.UserRole)
-            if data_index is None or data_index >= len(self._data):
-                continue
-
-            item = self._data[data_index]
-            is_reserved = (
-                item.get('is_reserved', False) or item.get('is_system', False)
-            )
-
-            if is_reserved:
+            if is_system:
                 type_visible = show_reserved
             else:
-                obj_type = item.get('type', '')
-                type_visible = TYPE_VISIBLE.get(obj_type, True)
+                type_visible = TYPE_VISIBLE.get(item.get('type', ''), True)
 
             if not type_visible:
                 self.setRowHidden(row, True)
                 continue
 
             if search:
-                searchable = self._search_cache.get(data_index, '')
+                searchable = self._model._search_cache.get(row, '')
                 self.setRowHidden(row, search not in searchable)
             else:
                 self.setRowHidden(row, False)
 
+    # ------------------------------------------------------------------
+    # Selection
+    # ------------------------------------------------------------------
+
     def get_selected_count(self) -> int:
-        """Get count of selected items."""
-        return sum(1 for v in self._selection_state.values() if v)
+        return self._model.get_selected_count()
 
     def get_selected_rows(self) -> List[int]:
-        """Get list of selected data indices."""
-        return [
-            idx for idx, selected in self._selection_state.items() if selected
-        ]
+        return self._model.get_selected_rows()
 
     def get_selection_state(self) -> Dict[int, bool]:
-        """Get copy of current selection state."""
-        return self._selection_state.copy()
+        return self._model.get_selection_state()
 
     def select_all_visible(self):
-        """Select all visible rows (excluding reserved items)."""
-        for row in range(self.rowCount()):
+        changed = []
+        for row in range(self._model.rowCount()):
             if self.isRowHidden(row):
                 continue
-
-            type_item = self.item(row, 2)
-            if type_item:
-                data_index = type_item.data(Qt.ItemDataRole.UserRole)
-                if data_index is not None:
-                    item = self._data[data_index]
-                    if item.get('is_reserved') or item.get('is_system'):
-                        continue
-                    self._selection_state[data_index] = True
-
-            widget = self.cellWidget(row, 0)
-            if widget:
-                chk = widget.findChild(QCheckBox)
-                if chk and chk.isEnabled():
-                    chk.blockSignals(True)
-                    chk.setChecked(True)
-                    chk.blockSignals(False)
-
-        self.selection_changed.emit(self.get_selected_count())
+            item = self._model._data[row]
+            if item.get('is_system', False):
+                continue
+            self._model._selection[row] = True
+            changed.append(row)
+        self._model._emit_selection_range(changed)
 
     def deselect_all_visible(self):
-        """Deselect all visible rows."""
-        for row in range(self.rowCount()):
+        changed = []
+        for row in range(self._model.rowCount()):
             if self.isRowHidden(row):
                 continue
-
-            type_item = self.item(row, 2)
-            if type_item:
-                data_index = type_item.data(Qt.ItemDataRole.UserRole)
-                if data_index is not None:
-                    self._selection_state[data_index] = False
-
-            widget = self.cellWidget(row, 0)
-            if widget:
-                chk = widget.findChild(QCheckBox)
-                if chk:
-                    chk.blockSignals(True)
-                    chk.setChecked(False)
-                    chk.blockSignals(False)
-
-        self.selection_changed.emit(self.get_selected_count())
+            self._model._selection[row] = False
+            changed.append(row)
+        self._model._emit_selection_range(changed)
 
     def invert_selection_visible(self):
-        """Invert selection for all visible rows (excluding reserved items)."""
-        for row in range(self.rowCount()):
+        changed = []
+        for row in range(self._model.rowCount()):
             if self.isRowHidden(row):
                 continue
-
-            type_item = self.item(row, 2)
-            if type_item:
-                data_index = type_item.data(Qt.ItemDataRole.UserRole)
-                if data_index is not None:
-                    item = self._data[data_index]
-                    if item.get('is_reserved') or item.get('is_system'):
-                        continue
-                    current = self._selection_state.get(data_index, False)
-                    self._selection_state[data_index] = not current
-
-            widget = self.cellWidget(row, 0)
-            if widget:
-                chk = widget.findChild(QCheckBox)
-                if chk and chk.isEnabled():
-                    chk.blockSignals(True)
-                    chk.setChecked(not chk.isChecked())
-                    chk.blockSignals(False)
-
-        self.selection_changed.emit(self.get_selected_count())
-
-    def update_row_colors(self, row: int, item: Dict[str, Any]):
-        """Update colors for a specific row based on item data."""
-        is_reserved = (
-            item.get('is_reserved', False) or item.get('is_system', False)
-        )
-
-        if is_reserved:
-            pt_source = SOURCE_RESERVED
-            en_source = SOURCE_RESERVED
-            es_source = SOURCE_RESERVED
-        else:
-            pt_source = item.get('pt_source', SOURCE_NEW)
-            en_source = item.get('en_source', SOURCE_NEW)
-            es_source = item.get('es_source', SOURCE_NEW)
-
-        pt_item = self.item(row, 5)
-        if pt_item:
-            pt_item.setBackground(QBrush(_get_source_color(pt_source)))
-            pt_item.setForeground(QBrush(_get_text_color(pt_source)))
-
-        en_item = self.item(row, 6)
-        if en_item:
-            en_item.setBackground(QBrush(_get_source_color(en_source)))
-            en_item.setForeground(QBrush(_get_text_color(en_source)))
-
-        es_item = self.item(row, 7)
-        if es_item:
-            es_item.setBackground(QBrush(_get_source_color(es_source)))
-            es_item.setForeground(QBrush(_get_text_color(es_source)))
-
-        placeholder_source = item.get('placeholder_source', 'proposed')
-        placeholder_item = self.item(row, 4)
-        if placeholder_item and placeholder_item.text():
-            placeholder_item.setBackground(
-                QBrush(_get_placeholder_color(placeholder_source))
+            item = self._model._data[row]
+            if item.get('is_system', False):
+                continue
+            self._model._selection[row] = not self._model._selection.get(
+                row, False
             )
-            placeholder_item.setForeground(
-                QBrush(_get_placeholder_text_color(placeholder_source))
-            )
+            changed.append(row)
+        self._model._emit_selection_range(changed)
 
-    def update_row_text(self, row: int, item: Dict[str, Any]):
-        """Update text for a specific row based on item data."""
-        pt_item = self.item(row, 5)
-        if pt_item:
-            pt_item.setText(item.get('pt', ''))
-
-        en_item = self.item(row, 6)
-        if en_item:
-            en_item.setText(item.get('en', ''))
-
-        es_item = self.item(row, 7)
-        if es_item:
-            es_item.setText(item.get('es', ''))
-
-        placeholder_item = self.item(row, 4)
-        if placeholder_item:
-            placeholder_text = item.get('dc_placeholder', '') or ''
-            placeholder_item.setText(placeholder_text)
-            if placeholder_text:
-                placeholder_source = item.get('placeholder_source', 'proposed')
-                if placeholder_source == 'existing':
-                    placeholder_item.setToolTip(
-                        f"Existing DC: {placeholder_text}"
-                    )
-                else:
-                    placeholder_item.setToolTip(
-                        f"Proposed: {placeholder_text}"
-                    )
+    # ------------------------------------------------------------------
+    # Row access
+    # ------------------------------------------------------------------
 
     def get_row_for_data_index(self, data_index: int) -> int:
-        """Get the table row for a given data index."""
-        for row in range(self.rowCount()):
-            type_item = self.item(row, 2)
-            if type_item:
-                row_data_index = type_item.data(Qt.ItemDataRole.UserRole)
-                if row_data_index == data_index:
-                    return row
+        """O(1) lookup: row index == data index in this model."""
+        if 0 <= data_index < self._model.rowCount():
+            return data_index
         return -1
 
     def refresh_row(self, data_index: int, item: Dict[str, Any]):
-        """Refresh a row with new item data."""
-        row = self.get_row_for_data_index(data_index)
-        if row >= 0:
-            self.blockSignals(True)
-            self.update_row_text(row, item)
-            self.update_row_colors(row, item)
-            self.blockSignals(False)
-            self._search_cache[data_index] = self._build_search_string(item)
+        """Refresh a row after external data change."""
+        self._model.update_item(data_index, item)
+        self._update_stats()
+
+    def update_row_colors(self, row: int, item: Dict[str, Any]):
+        self._model.update_item(row, item)
+
+    def update_row_text(self, row: int, item: Dict[str, Any]):
+        self._model.update_item(row, item)
 
     def get_visible_data_indices(self) -> List[int]:
-        """Get list of visible (not hidden) data indices."""
-        indices = []
-        for row in range(self.rowCount()):
-            if not self.isRowHidden(row):
-                type_item = self.item(row, 2)
-                if type_item:
-                    data_index = type_item.data(Qt.ItemDataRole.UserRole)
-                    if data_index is not None:
-                        indices.append(data_index)
-        return indices
+        return [
+            row for row in range(self._model.rowCount())
+            if not self.isRowHidden(row)
+        ]
 
     def get_visible_selected_indices(self) -> List[int]:
-        """Get list of visible AND selected data indices."""
         visible = set(self.get_visible_data_indices())
-        selected = set(self.get_selected_rows())
+        selected = set(self._model.get_selected_rows())
         return list(visible & selected)

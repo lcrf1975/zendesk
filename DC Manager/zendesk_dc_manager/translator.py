@@ -11,7 +11,7 @@ import time
 import random
 import threading
 from pathlib import Path
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, Tuple
 
 import requests
 
@@ -274,36 +274,6 @@ class TranslationService:
         except Exception as e:
             logger.error(f"Google Cloud translation failed: {e}")
             return None
-
-    def translate_batch(
-        self,
-        texts: List[str],
-        source_lang: str,
-        target_lang: str,
-        progress_callback=None
-    ) -> List[Tuple[str, Optional[str], bool]]:
-        """
-        Translate multiple texts.
-
-        Returns:
-            List of tuples: (original_text, translated_text, from_cache)
-        """
-        results = []
-        total = len(texts)
-
-        for i, text in enumerate(texts):
-            translated, from_cache = self.translate(text, source_lang, target_lang)
-            results.append((text, translated, from_cache))
-
-            if progress_callback:
-                progress_callback(i + 1, total)
-
-        return results
-
-    def save_cache(self):
-        """Save the translation cache to disk (no-op for SQLite, included for API compatibility)."""
-        # SQLite cache auto-saves, but we can force a cleanup if needed
-        pass
 
     def clear_cache(self) -> bool:
         """Clear the translation cache."""
