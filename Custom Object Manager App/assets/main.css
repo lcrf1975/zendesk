@@ -1,8 +1,19 @@
+/* Both html and body must be height:100% so the body box is constrained to
+   the iframe viewport height (= what resizeIframe actually set).
+   When content is taller than that cap, overflow-y:auto on body shows a
+   scrollbar inside the panel instead of the panel extending off-screen. */
+html {
+  height: 100%;
+}
+
 body {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   padding: 16px;
   margin: 0;
   color: #2f3941;
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 /* Extra bottom clearance so the last form field is never flush against the iframe edge */
@@ -391,6 +402,13 @@ mark.fd-diff {
 }
 .tabulator-col-title {
   font-weight: 600;
+}
+
+/* When many columns are visible their combined minWidths can exceed the
+   container. fitColumns stops shrinking at minWidth, so the table overflows.
+   This makes the overflow scrollable instead of silently clipping columns. */
+#records-table .tabulator-tableholder {
+  overflow-x: auto;
 }
 
 /* --- NEW: Tabbed Interface Styles --- */

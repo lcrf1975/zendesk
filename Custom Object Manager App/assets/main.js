@@ -468,7 +468,7 @@ function applyI18nToDOM() {
     el.textContent = t(el.getAttribute('data-i18n'));
   });
   document.querySelectorAll('[data-i18n-html]').forEach(el => {
-    el.textContent = t(el.getAttribute('data-i18n-html'));
+    el.innerHTML = t(el.getAttribute('data-i18n-html'));
   });
   document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
     el.placeholder = t(el.getAttribute('data-i18n-placeholder'));
@@ -533,7 +533,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     const containerWidth = document.getElementById('table-view').clientWidth || window.innerWidth;
     const availableWidth = containerWidth - 40; 
-    let usedWidth = 190; 
+    let usedWidth = 215; // 50 (# col) + 165 (actions col) — always-visible, not counted in the loop below
     const defaultVisible = [];
 
     const tableCols = tabulatorTable.getColumnDefinitions();
@@ -586,7 +586,13 @@ function startPreScanTimer() {
 }
 
 function resizeIframe() {
-  client.invoke('resize', { width: '100%', height: `${document.body.scrollHeight + 16}px` });
+  // Cap at 75% of the available screen height so the panel never extends
+  // off the bottom of the Zendesk workspace (which is ~75-80% of the screen
+  // after browser chrome + Zendesk top bar are subtracted).
+  // Content taller than this cap scrolls inside the body (overflow-y: auto).
+  const maxH = Math.floor((window.screen.availHeight || 900) * 0.75);
+  const h = Math.min(document.body.scrollHeight + 16, maxH);
+  client.invoke('resize', { width: '100%', height: `${h}px` });
 }
 
 function switchView(activeViewId) {
@@ -627,7 +633,7 @@ function updateRecordSummary(activeCount) {
   const summaryEl = document.getElementById('record-summary');
   if (!summaryEl || !tabulatorTable) return;
   const total = tabulatorTable.getData().length;
-  const active = activeCount !== undefined ? activeCount : tabulatorTable.getData('active').length;
+  const active = activeCount !== undefined ? activeCount : (rowNumMap ? rowNumMap.size : tabulatorTable.getData().length);
   const loadingNote = isBackgroundLoading
     ? ` <span style="color:#1f73b7; font-size:12px; font-weight:600;">${t('summary.loadingMore')}</span>`
     : '';
@@ -780,18 +786,19 @@ async function loadTable(coKey) {
     }
 
     const columns = [
-      { 
-        title: "#", 
-        field: "custom_rownum", 
-        headerSort: false, 
-        width: 50, 
-        hozAlign: "center", 
+      {
+        title: "#",
+        field: "custom_rownum",
+        headerSort: false,
+        width: 50,
+        minWidth: 40,
+        hozAlign: "center",
         resizable: false,
         formatter: function(cell) {
           return rowNumMap ? (rowNumMap.get(cell.getData().id) || '') : '';
         }
       },
-      { title: t('col.id'), field: "id", width: 80 },
+      { title: t('col.id'), field: "id", width: 80, minWidth: 80 },
       { title: t('col.name'), field: "name", minWidth: 150 }
     ];
 
@@ -799,16 +806,19 @@ async function loadTable(coKey) {
       let colDef = { title: field.title, field: field.key };
 
       if (field.type === 'checkbox') {
-        colDef.width = 100; 
+        colDef.width    = 100;
+        colDef.minWidth = 80;
         colDef.hozAlign = "center";
-        colDef.formatter = "tickCross"; 
+        colDef.formatter = "tickCross";
       } else if (field.type === 'date') {
-        colDef.width = 120; 
+        colDef.width    = 120;
+        colDef.minWidth = 100;
       } else if (field.type === 'integer' || field.type === 'decimal') {
-        colDef.width = 110; 
+        colDef.width    = 110;
+        colDef.minWidth = 80;
         colDef.hozAlign = "right";
       } else {
-        colDef.minWidth = 150; 
+        colDef.minWidth = 150;
       }
 
       columns.push(colDef);
@@ -820,7 +830,8 @@ async function loadTable(coKey) {
       formatter: function() {
         return `<button class="btn-edit">${t('row.edit')}</button><button class="btn-danger">${t('row.delete')}</button>`;
       },
-      width: 140, 
+      width: 165,
+      minWidth: 165,
       headerSort: false,
       cellClick: function(e, cell) {
         const rowData = cell.getRow().getData();
@@ -837,7 +848,7 @@ async function loadTable(coKey) {
 
     const containerWidth = document.getElementById('table-view').clientWidth || window.innerWidth;
     const availableWidth = containerWidth - 40; 
-    let usedWidth = 190; 
+    let usedWidth = 215; // 50 (# col) + 165 (actions col) — always-visible, not counted in the loop below
     
     const defaultVisibleCols = [];
 
@@ -864,7 +875,7 @@ async function loadTable(coKey) {
 
     tabulatorTable = new Tabulator("#records-table", {
       data: tableData,
-      layout: "fitColumns", 
+      layout: "fitDataStretch",
       pagination: "local",
       paginationSize: 15,
       columns: columns,
@@ -893,9 +904,15 @@ async function loadTable(coKey) {
     });
 
     tabulatorTable.on("tableBuilt", () => {
-      // Build the initial map for the first render (no filter applied yet).
-      const initRows = tabulatorTable.getRows('active');
-      rowNumMap = new Map(initRows.map((row, i) => [row.getData().id, i + 1]));
+      // Build the initial row-number map only when no filter/search is active.
+      // For same-CO reloads where applyTableFilters() was called before tableBuilt fires,
+      // the dataFiltered event will build rowNumMap correctly — avoid overwriting it here
+      // with getRows('active'), which does not reflect functional filters in Tabulator 5.5.0.
+      const hasActiveSearch = !!(document.getElementById('table-search')?.value?.trim());
+      if (!hasActiveSearch && activeFilters.length === 0) {
+        const initRows = tabulatorTable.getRows();
+        rowNumMap = new Map(initRows.map((row, i) => [row.getData().id, i + 1]));
+      }
       updateRecordSummary();
       resizeIframe();
       if (hasMorePages) {
@@ -1137,6 +1154,9 @@ async function deleteRecord(recordId, recordName) {
 // VIEW 3: DYNAMIC FORM & RELATED RECORDS TAB
 // ----------------------------------------------------
 async function showForm(existingRecord = null, initialTab = 'details') {
+  // Reset stale scan flag: if a previous form's Usage & Impact scan is still running,
+  // opening a new form must not block the new tab from loading.
+  _relatedScanActive = false;
   updateLoaderText(t('loader.form'));
   switchView('loader');
   
@@ -1268,6 +1288,10 @@ async function showForm(existingRecord = null, initialTab = 'details') {
     if (isEdit) {
       formHtml += `<div id="tab-content-related" style="display: none;"></div>`;
     }
+
+    // Destroy any TomSelect instances on the current form before replacing the DOM.
+    // TomSelect attaches global document-level listeners that are only removed via .destroy().
+    views.form.querySelectorAll('select').forEach(el => { if (el.tomselect) el.tomselect.destroy(); });
 
     views.form.innerHTML = formHtml;
     switchView('form');
@@ -2671,8 +2695,8 @@ function showExportModal() {
 
   const overlay    = document.getElementById('export-modal-overlay');
   const infoEl     = document.getElementById('export-modal-info');
-  const activeRows = tabulatorTable.getData('active').length;
   const totalRows  = tabulatorTable.getData().length;
+  const activeRows = rowNumMap ? rowNumMap.size : totalRows;
   const isFiltered = activeRows < totalRows;
   const infoKey = isFiltered
     ? (activeRows === 1 ? 'export.rowSingularFiltered' : 'export.rowPluralFiltered')
@@ -2691,7 +2715,14 @@ function showExportModal() {
 
 function buildAndDownloadCSV(allColumns) {
   try {
-    const data = tabulatorTable.getData('active');
+    // getData('active') does not reflect functional filters in Tabulator 5.5.0 — use
+    // rowNumMap instead, which is built from the authoritative dataFiltered rows param.
+    // rowNumMap keys are in insertion order == sorted+filtered display order.
+    const allData = tabulatorTable.getData();
+    const allDataById = new Map(allData.map(r => [r.id, r]));
+    const data = rowNumMap
+      ? [...rowNumMap.keys()].map(id => allDataById.get(id)).filter(Boolean)
+      : allData;
 
     const cols = tabulatorTable.getColumns().filter(col => {
       const field = col.getField();
@@ -3060,7 +3091,7 @@ async function searchLookupData(targetType, query) {
     endpoint = `/api/v2/users/autocomplete.json?name=${encodeURIComponent(query)}`;
     dataKey = 'users';
   } else if (targetType === 'zen:ticket') {
-    endpoint = `/api/v2/search.json?query=type:ticket ${encodeURIComponent(query)}`;
+    endpoint = `/api/v2/search.json?query=${encodeURIComponent(`type:ticket ${query}`)}`;
     dataKey = 'results';
     labelField = 'subject'; 
   } else if (targetType === 'zen:organization') {
