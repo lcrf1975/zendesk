@@ -1,6 +1,46 @@
-/* global ZAFClient */
+/* global ZAFClient, Tabulator, TomSelect */
+// main.js is loaded as an ES module (see iframe.html). Helpers imported from ./modules/*;
+// stateful UI code lives here so we don't paper over a natural module boundary with churn.
+import { CONFIG } from './modules/config.js';
+import { loadPrefs, savePrefs } from './modules/prefs.js';
+import {
+  escapeHtml, formatElapsed,
+  normalizeForMatch, sanitizeSearchPhrase,
+  normalizeForDuplicate, normalizeForSimilar, DUPLICATE_STOPWORDS,
+  diffHighlight, csvEscape,
+} from './modules/utils.js';
+
 // Initialize the ZAF Client
 const client = ZAFClient.init();
+
+// ============================================================
+// ZAF REQUEST WRAPPER WITH 429/503 RETRY + BACKOFF
+// ============================================================
+// Zendesk rate limits to ~700 req/min per agent. Large Reverse Lookup scans or
+// delete propagation can hit that ceiling. The wrapper retries transient errors
+// (429 Too Many Requests, 503 Service Unavailable) honouring the Retry-After
+// header when present, with exponential backoff otherwise. All other errors
+// propagate unchanged so existing catch blocks still work.
+async function zafRequest(options, retriesLeft = 3) {
+  try {
+    return await client.request(options);
+  } catch (err) {
+    const status = err?.status ?? err?.statusCode;
+    const isRetryable = status === 429 || status === 503;
+    if (!isRetryable || retriesLeft <= 0) throw err;
+
+    let waitMs = 1000 * Math.pow(2, 3 - retriesLeft);
+    const retryAfter = err?.responseHeaders?.['retry-after'] ?? err?.responseHeaders?.['Retry-After'];
+    if (retryAfter) {
+      const seconds = parseInt(retryAfter, 10);
+      if (!isNaN(seconds) && seconds > 0) waitMs = Math.min(seconds * 1000, 30000);
+    }
+    waitMs = Math.min(waitMs, 10000);
+    console.warn(`[zafRequest] ${status} — retrying in ${waitMs}ms (${retriesLeft} left)`);
+    await new Promise(r => setTimeout(r, waitMs));
+    return zafRequest(options, retriesLeft - 1);
+  }
+}
 
 // Global App State
 let currentCoKey = null;
@@ -29,418 +69,14 @@ let _preScanTimer = null;      // elapsed timer for "Discovering..." phase befor
 // ============================================================
 // INTERNATIONALISATION
 // ============================================================
-const TRANSLATIONS = {
-  en: {
-    'loader.customObjects': 'Loading Custom Objects...',
-    'loader.schema': 'Loading schema...', 'loader.records': 'Loading records...',
-    'loader.rendering': 'Rendering table...', 'loader.form': 'Building form...',
-    'loader.error.customObjects': 'Error loading Custom Objects. Check your permissions.',
-    'loader.error.table': 'Error loading table data.',
-    'selector.title': 'Select a Custom Object', 'selector.placeholder': '-- Choose an Object --',
-    'selector.button': 'Load Object Dashboard',
-    'table.addRecord': 'Add New Record', 'table.advancedFilter': 'Advanced Filter',
-    'table.exportCsv': 'Export CSV', 'table.changeObject': 'Change Object',
-    'table.searchPlaceholder': 'Search all fields...', 'table.restoreColumns': 'Restore Columns',
-    'table.selectColumns': 'Select visible columns...',
-    'summary.showing': 'Showing', 'summary.of': 'of', 'summary.records': 'records',
-    'summary.loadingMore': '(only the first 100 records are shown while loading)',
-    'col.id': 'ID', 'col.name': 'Record Name', 'col.actions': 'Actions',
-    'row.edit': 'Edit', 'row.delete': 'Delete',
-    'filter.title': 'Advanced Filters', 'filter.match': 'Match:',
-    'filter.and': 'ALL conditions (AND)', 'filter.or': 'ANY condition (OR)',
-    'filter.hint': '* wildcard: abc* starts with  ·  *xyz ends with  ·  *text* contains  ·  Numeric/date operators use exact values',
-    'filter.addCondition': '+ Add Condition', 'filter.apply': 'Apply Filter', 'filter.clearAll': 'Clear All',
-    'filter.valuePlaceholder': 'value, prefix*, *suffix, *contains*',
-    'op.eq': '= equals', 'op.neq': '≠ not equals', 'op.empty': 'is empty / null',
-    'op.notempty': 'is not empty', 'op.true': 'is true / yes', 'op.false': 'is false / no / null',
-    'op.gt': '> greater than', 'op.lt': '< less than', 'op.gte': '≥ greater or equal', 'op.lte': '≤ less or equal',
-    'form.editTitle': 'Edit Record {id}', 'form.createTitle': 'Create new {key} record',
-    'form.tabDetails': 'Details', 'form.tabUsage': 'Usage & Impact',
-    'form.updateButton': 'Update Record', 'form.saveButton': 'Save Record', 'form.cancel': 'Cancel',
-    'form.recordName': 'Record Name', 'form.selectPlaceholder': '-- Select {field} --',
-    'form.lookupPlaceholder': '-- Type to search --', 'form.lookupSearch': 'Type to search {field}...',
-    'form.saving': 'Saving...', 'form.saveError': 'Failed to save record. Check console.',
-    'form.loadError': 'Error loading form.', 'form.recordFallback': 'Record {id}',
-    'delete.scanning': 'Scanning for linked data...', 'delete.discovering': 'Discovering lookup fields...',
-    'delete.starting': 'Starting scan...', 'delete.checked': 'Checked: {label}',
-    'delete.scanTriggers': 'Scanning triggers', 'delete.scanAutomations': 'Scanning automations',
-    'delete.scanViews': 'Scanning views', 'delete.scanSla': 'Scanning SLA policies',
-    'delete.warningTitle': 'Warning: "{name}" is actively used',
-    'delete.warningBody': 'Deleting it will clear linked references and may break rule conditions.',
-    'delete.linkedData': 'Linked data', 'delete.ruleConditions': 'Rule conditions',
-    'delete.viewUsage': 'View Usage & Impact',
-    'delete.confirmQuestion': 'Are you sure you want to permanently delete this record?',
-    'delete.confirmTitle': 'Confirm Deletion',
-    'delete.confirmBody': 'Are you sure you want to delete <strong>{name}</strong>? This cannot be undone.',
-    'delete.error': 'Failed to delete record. Please try again.', 'delete.deleting': 'Deleting...',
-    'delete.linkedItem': 'linked item', 'delete.linkedItems': 'linked items',
-    'delete.ruleWord': 'rule', 'delete.rulesWord': 'rules', 'delete.ruleTypes': '(trigger/automation/view/SLA)',
-    'delete.linkedItemsLoseRef': 'Linked items will lose their reference to this record.',
-    'delete.rulesMayBreak': 'Rules with a condition referencing this record may behave unexpectedly.',
-    'delete.checksComplete': '{done} / {total} checks complete',
-    'usage.discovering': 'Discovering lookup fields...', 'usage.viaField': 'via field: {title}',
-    'usage.conditionRef': 'condition references this record',
-    'usage.noItems': 'No active records, rules, or configurations are currently linked to this item.',
-    'usage.moreRecords': '+ More records exist (First 100 shown)',
-    'export.title': 'Export to CSV',
-    'export.rowSingular': '{n} row will be exported', 'export.rowPlural': '{n} rows will be exported',
-    'export.rowSingularFiltered': '{n} row will be exported (filtered from {total} total)',
-    'export.rowPluralFiltered': '{n} rows will be exported (filtered from {total} total)',
-    'export.question': 'Which columns should be included?',
-    'export.cancel': 'Cancel', 'export.visible': 'Visible Columns Only', 'export.all': 'All Fields',
-    'rules.triggers': 'Triggers', 'rules.automations': 'Automations',
-    'rules.views': 'Views', 'rules.sla': 'SLA Policies',
-    'table.reverseLookup': 'Reverse Lookup',
-    'reverseLookup.title': 'Reverse Lookup',
-    'reverseLookup.description': 'Scan rule conditions to find which records of this type are referenced.',
-    'reverseLookup.selectTypes': 'Select types to scan:',
-    'reverseLookup.includeNames': 'Include name-based matches (may include false positives)',
-    'reverseLookup.run': 'Run Lookup',
-    'reverseLookup.scanning': 'Scanning rules...',
-    'reverseLookup.found': '{n} record(s) found with references',
-    'reverseLookup.noResults': 'No records of this type were found referenced in the selected rules.',
-    'reverseLookup.runAgain': 'New Search',
-    'reverseLookup.exactMatch': 'exact',
-    'reverseLookup.nameMatch': 'name match',
-    'reverseLookup.nameMatchNote': 'Results marked "name match" are based on similarity and may include false positives.',
-    'reverseLookup.ticketFields': 'Ticket text fields',
-    'reverseLookup.ticketLabel':  'Ticket',
-    'reverseLookup.userFields':   'User text fields',
-    'reverseLookup.orgFields':    'Organization text fields',
-    'reverseLookup.textFieldWarning': 'Text field searches make ~{n} API requests. This may take a while for large datasets.',
-    'reverseLookup.scope':         'Records to scan:',
-    'reverseLookup.scopeAll':      'All records ({n})',
-    'reverseLookup.scopeFiltered': 'Visible records only ({n})',
-    'reverseLookup.stop':         'Stop',
-    'reverseLookup.stopping':     'Stopping...',
-    'reverseLookup.stopped':      'Scan stopped — results shown may be incomplete.',
-    'reverseLookup.scopeNoFilter': 'Filtered records (apply a search or filter first)',
-    'app.title': 'Custom Object Record Manager (Build 202603-47)',
-    'table.dashboard': 'Dashboard',
-    'table.searchLoading': 'Available after all records are loaded',
-    'export.loadingWarning': 'This feature will be available after all records are loaded.',
-    'form.unsavedTitle': 'Unsaved Changes',
-    'form.unsavedBody': 'You have unsaved changes that will be lost if you leave.',
-    'form.unsavedStay': 'Stay',
-    'form.unsavedLeave': 'Leave',
-    'usage.refresh': 'Refresh',
-    'summary.loadError': '· loading interrupted, some records may be missing',
-    'usage.openLink': 'Open in Zendesk',
-    'rel.tickets':       'Tickets',
-    'rel.users':         'Users',
-    'rel.organizations': 'Organizations',
-    'usage.possibleMatches': 'Possible Matches',
-    'usage.possibleMatchesHint': 'Rules where a condition value contains this record\'s name. Verify manually.',
-    'usage.possibleCondRef': 'name found in condition value',
-    'delete.possibleMatches': 'possible matches (by name)',
-    'table.findDuplicates': 'Find Duplicates',
-    'findDuplicates.title': 'Find Duplicate Records',
-    'findDuplicates.description': 'Finds records with identical or similar names (case-insensitive; spaces, underscores, and hyphens are treated as equivalent).',
-    'findDuplicates.diffHint': 'Highlighted characters show differences between records in each group.',
-    'findDuplicates.noResults': 'No duplicate or similar names found among all loaded records.',
-    'findDuplicates.found': '{n} group(s) with duplicate or similar names — {total} records affected',
-    'findDuplicates.groupCount': '{n} records',
-    'findDuplicates.selectAll': 'Select all in group',
-    'findDuplicates.noneSelected': 'Select records to delete',
-    'findDuplicates.selectedCount': '{n} record(s) selected',
-    'findDuplicates.deleteSelected': 'Delete Selected',
-    'findDuplicates.deleteSelectedN': 'Delete Selected ({n})',
-    'findDuplicates.confirmTitle': 'Delete {n} record(s)?',
-    'findDuplicates.deleteWarning': 'This cannot be undone. Use Edit → Usage & Impact to check for linked data before deleting.',
-    'findDuplicates.confirmDeleteBtn': 'Confirm Delete ({n})',
-    'findDuplicates.deleting': 'Deleting {done} of {total}...',
-    'findDuplicates.deleteSuccess': '{n} record(s) deleted successfully.',
-    'findDuplicates.deleteErrors': '{n} record(s) could not be deleted',
-    'findDuplicates.scanning': 'Checking dependencies {done} of {total}...',
-    'findDuplicates.scanComplete': 'Scan complete — review before confirming',
-    'findDuplicates.dependencies': 'Dependencies',
-    'findDuplicates.noDeps': 'No dependencies',
-    'findDuplicates.hasLinked': '{n} linked item(s)',
-    'findDuplicates.hasRules': '{n} rule condition(s)',
-    'findDuplicates.hasPossible': '~{n} possible match(es)',
-    'findDuplicates.exactTitle': 'Exact Duplicates',
-    'findDuplicates.exactHint': 'Records that are identical or differ only in case, separators, or diacritics.',
-    'findDuplicates.similarTitle': 'Similar Names',
-    'findDuplicates.similarHint': 'Records with similar names — different word order, or missing/extra words like articles and prepositions. Verify manually before deleting.',
-    'findDuplicates.noExact': 'No exact duplicates found.',
-  },
-
-  'pt-BR': {
-    'loader.customObjects': 'Carregando Objetos Customizados...',
-    'loader.schema': 'Carregando esquema...', 'loader.records': 'Carregando registros...',
-    'loader.rendering': 'Renderizando tabela...', 'loader.form': 'Preparando formulário...',
-    'loader.error.customObjects': 'Erro ao carregar Objetos Customizados. Verifique suas permissões.',
-    'loader.error.table': 'Erro ao carregar dados da tabela.',
-    'selector.title': 'Selecione um Objeto Customizado', 'selector.placeholder': '-- Escolha um Objeto --',
-    'selector.button': 'Carregar Dashboard',
-    'table.addRecord': 'Adicionar Registro', 'table.advancedFilter': 'Filtro Avançado',
-    'table.exportCsv': 'Exportar CSV', 'table.changeObject': 'Trocar Objeto',
-    'table.searchPlaceholder': 'Pesquisar em todos os campos...', 'table.restoreColumns': 'Restaurar Colunas',
-    'table.selectColumns': 'Selecione as colunas visíveis...',
-    'summary.showing': 'Exibindo', 'summary.of': 'de', 'summary.records': 'registros',
-    'summary.loadingMore': '(apenas os 100 primeiros registros sao exibidos durante o carregamento)',
-    'col.id': 'ID', 'col.name': 'Nome do Registro', 'col.actions': 'Ações',
-    'row.edit': 'Editar', 'row.delete': 'Excluir',
-    'filter.title': 'Filtros Avançados', 'filter.match': 'Corresponder:',
-    'filter.and': 'TODAS as condições (E)', 'filter.or': 'QUALQUER condição (OU)',
-    'filter.hint': '* curinga: abc* começa com  ·  *xyz termina com  ·  *texto* contém  ·  Operadores numéricos/data usam valores exatos',
-    'filter.addCondition': '+ Adicionar Condição', 'filter.apply': 'Aplicar Filtro', 'filter.clearAll': 'Limpar Tudo',
-    'filter.valuePlaceholder': 'valor, prefixo*, *sufixo, *contém*',
-    'op.eq': '= igual a', 'op.neq': '≠ diferente de', 'op.empty': 'está vazio / nulo',
-    'op.notempty': 'não está vazio', 'op.true': 'é verdadeiro / sim', 'op.false': 'é falso / não / nulo',
-    'op.gt': '> maior que', 'op.lt': '< menor que', 'op.gte': '≥ maior ou igual', 'op.lte': '≤ menor ou igual',
-    'form.editTitle': 'Editar Registro {id}', 'form.createTitle': 'Criar novo registro em {key}',
-    'form.tabDetails': 'Detalhes', 'form.tabUsage': 'Uso e Impacto',
-    'form.updateButton': 'Atualizar Registro', 'form.saveButton': 'Salvar Registro', 'form.cancel': 'Cancelar',
-    'form.recordName': 'Nome do Registro', 'form.selectPlaceholder': '-- Selecione {field} --',
-    'form.lookupPlaceholder': '-- Digite para pesquisar --', 'form.lookupSearch': 'Digite para pesquisar {field}...',
-    'form.saving': 'Salvando...', 'form.saveError': 'Falha ao salvar registro. Verifique o console.',
-    'form.loadError': 'Erro ao carregar formulário.', 'form.recordFallback': 'Registro {id}',
-    'delete.scanning': 'Verificando dados vinculados...', 'delete.discovering': 'Descobrindo campos de lookup...',
-    'delete.starting': 'Iniciando verificação...', 'delete.checked': 'Verificado: {label}',
-    'delete.scanTriggers': 'Verificando gatilhos', 'delete.scanAutomations': 'Verificando automações',
-    'delete.scanViews': 'Verificando visões', 'delete.scanSla': 'Verificando políticas de SLA',
-    'delete.warningTitle': 'Atenção: "{name}" está em uso',
-    'delete.warningBody': 'Excluí-lo limpará as referências vinculadas e pode quebrar condições de regras.',
-    'delete.linkedData': 'Dados vinculados', 'delete.ruleConditions': 'Condições de regras',
-    'delete.viewUsage': 'Ver Uso e Impacto',
-    'delete.confirmQuestion': 'Tem certeza que deseja excluir permanentemente este registro?',
-    'delete.confirmTitle': 'Confirmar Exclusão',
-    'delete.confirmBody': 'Tem certeza que deseja excluir <strong>{name}</strong>? Esta ação não pode ser desfeita.',
-    'delete.error': 'Falha ao excluir registro. Tente novamente.', 'delete.deleting': 'Excluindo...',
-    'delete.linkedItem': 'item vinculado', 'delete.linkedItems': 'itens vinculados',
-    'delete.ruleWord': 'regra', 'delete.rulesWord': 'regras', 'delete.ruleTypes': '(gatilho/automação/visão/SLA)',
-    'delete.linkedItemsLoseRef': 'Os itens vinculados perderão sua referência a este registro.',
-    'delete.rulesMayBreak': 'Regras com condição referenciando este registro podem se comportar de forma inesperada.',
-    'delete.checksComplete': '{done} / {total} verificações concluídas',
-    'usage.discovering': 'Descobrindo campos de lookup...', 'usage.viaField': 'via campo: {title}',
-    'usage.conditionRef': 'condição referencia este registro',
-    'usage.noItems': 'Nenhum registro, regra ou configuração está vinculada a este item.',
-    'usage.moreRecords': '+ Mais registros existem (Primeiros 100 exibidos)',
-    'export.title': 'Exportar para CSV',
-    'export.rowSingular': '{n} linha será exportada', 'export.rowPlural': '{n} linhas serão exportadas',
-    'export.rowSingularFiltered': '{n} linha será exportada (filtrada de {total} no total)',
-    'export.rowPluralFiltered': '{n} linhas serão exportadas (filtradas de {total} no total)',
-    'export.question': 'Quais colunas devem ser incluídas?',
-    'export.cancel': 'Cancelar', 'export.visible': 'Apenas Colunas Visíveis', 'export.all': 'Todos os Campos',
-    'rules.triggers': 'Gatilhos', 'rules.automations': 'Automações',
-    'rules.views': 'Visões', 'rules.sla': 'Políticas de SLA',
-    'table.reverseLookup': 'Pesquisa Reversa',
-    'reverseLookup.title': 'Pesquisa Reversa',
-    'reverseLookup.description': 'Verifica condições de regras para encontrar quais registros deste tipo são referenciados.',
-    'reverseLookup.selectTypes': 'Selecione os tipos para verificar:',
-    'reverseLookup.includeNames': 'Incluir correspondências por nome (pode incluir falsos positivos)',
-    'reverseLookup.run': 'Executar Pesquisa',
-    'reverseLookup.scanning': 'Verificando regras...',
-    'reverseLookup.found': '{n} registro(s) encontrado(s) com referências',
-    'reverseLookup.noResults': 'Nenhum registro deste tipo foi encontrado nas regras selecionadas.',
-    'reverseLookup.runAgain': 'Nova Pesquisa',
-    'reverseLookup.exactMatch': 'exato',
-    'reverseLookup.nameMatch': 'correspondência por nome',
-    'reverseLookup.nameMatchNote': 'Resultados marcados como "correspondência por nome" são baseados em similaridade e podem incluir falsos positivos.',
-    'reverseLookup.ticketFields': 'Campos de texto de tickets',
-    'reverseLookup.ticketLabel':  'Ticket',
-    'reverseLookup.userFields':   'Campos de texto de usuários',
-    'reverseLookup.orgFields':    'Campos de texto de organizações',
-    'reverseLookup.textFieldWarning': 'Pesquisas em campos de texto fazem ~{n} requisições. Pode demorar para grandes volumes.',
-    'reverseLookup.scope':         'Registros para pesquisar:',
-    'reverseLookup.scopeAll':      'Todos os registros ({n})',
-    'reverseLookup.scopeFiltered': 'Apenas registros visíveis ({n})',
-    'reverseLookup.stop':         'Parar',
-    'reverseLookup.stopping':     'Parando...',
-    'reverseLookup.stopped':      'Varredura interrompida — resultados exibidos podem estar incompletos.',
-    'reverseLookup.scopeNoFilter': 'Registros filtrados (aplique uma pesquisa ou filtro primeiro)',
-    'app.title': 'Gerenciador de Registros de Objetos Customizados',
-    'table.dashboard': 'Painel',
-    'table.searchLoading': 'Disponível após o carregamento de todos os registros',
-    'export.loadingWarning': 'Esta funcionalidade ficará disponível após o carregamento de todos os registros.',
-    'form.unsavedTitle': 'Alterações não salvas',
-    'form.unsavedBody': 'Você tem alterações não salvas que serão perdidas se sair.',
-    'form.unsavedStay': 'Ficar',
-    'form.unsavedLeave': 'Sair',
-    'usage.refresh': 'Atualizar',
-    'summary.loadError': '· carregamento interrompido, alguns registros podem estar faltando',
-    'usage.openLink': 'Abrir no Zendesk',
-    'rel.tickets':       'Tickets',
-    'rel.users':         'Usuários',
-    'rel.organizations': 'Organizações',
-    'usage.possibleMatches': 'Correspondências Possíveis',
-    'usage.possibleMatchesHint': 'Regras com valor de condição contendo o nome deste registro. Verifique manualmente.',
-    'usage.possibleCondRef': 'nome encontrado no valor da condição',
-    'delete.possibleMatches': 'correspondências possíveis (por nome)',
-    'table.findDuplicates': 'Encontrar Duplicatas',
-    'findDuplicates.title': 'Encontrar Registros Duplicados',
-    'findDuplicates.description': 'Encontra registros com nomes idênticos ou similares (sem distinção de maiúsculas/minúsculas; espaços, underscores e hífens são equivalentes).',
-    'findDuplicates.diffHint': 'Caracteres destacados mostram diferenças entre os registros do grupo.',
-    'findDuplicates.noResults': 'Nenhum nome duplicado ou similar encontrado nos registros carregados.',
-    'findDuplicates.found': '{n} grupo(s) com nomes duplicados ou similares — {total} registros afetados',
-    'findDuplicates.groupCount': '{n} registros',
-    'findDuplicates.selectAll': 'Selecionar todos no grupo',
-    'findDuplicates.noneSelected': 'Selecione registros para excluir',
-    'findDuplicates.selectedCount': '{n} registro(s) selecionado(s)',
-    'findDuplicates.deleteSelected': 'Excluir Selecionados',
-    'findDuplicates.deleteSelectedN': 'Excluir Selecionados ({n})',
-    'findDuplicates.confirmTitle': 'Excluir {n} registro(s)?',
-    'findDuplicates.deleteWarning': 'Esta ação não pode ser desfeita. Use Editar → Uso e Impacto para verificar dados vinculados antes de excluir.',
-    'findDuplicates.confirmDeleteBtn': 'Confirmar Exclusão ({n})',
-    'findDuplicates.deleting': 'Excluindo {done} de {total}...',
-    'findDuplicates.deleteSuccess': '{n} registro(s) excluído(s) com sucesso.',
-    'findDuplicates.deleteErrors': '{n} registro(s) não puderam ser excluídos',
-    'findDuplicates.scanning': 'Verificando dependências {done} de {total}...',
-    'findDuplicates.scanComplete': 'Verificação concluída — revise antes de confirmar',
-    'findDuplicates.dependencies': 'Dependências',
-    'findDuplicates.noDeps': 'Sem dependências',
-    'findDuplicates.hasLinked': '{n} item(ns) vinculado(s)',
-    'findDuplicates.hasRules': '{n} condição(ões) de regra',
-    'findDuplicates.hasPossible': '~{n} correspondência(s) possível(is)',
-    'findDuplicates.exactTitle': 'Duplicatas Exatas',
-    'findDuplicates.exactHint': 'Registros idênticos ou que diferem apenas em maiúsculas/minúsculas, separadores ou diacríticos.',
-    'findDuplicates.similarTitle': 'Nomes Similares',
-    'findDuplicates.similarHint': 'Registros com nomes similares — ordem diferente ou palavras extras/faltantes como artigos e preposições. Verifique manualmente antes de excluir.',
-    'findDuplicates.noExact': 'Nenhuma duplicata exata encontrada.',
-  },
-
-  es: {
-    'loader.customObjects': 'Cargando Objetos Personalizados...',
-    'loader.schema': 'Cargando esquema...', 'loader.records': 'Cargando registros...',
-    'loader.rendering': 'Renderizando tabla...', 'loader.form': 'Preparando formulario...',
-    'loader.error.customObjects': 'Error al cargar Objetos Personalizados. Verifique sus permisos.',
-    'loader.error.table': 'Error al cargar datos de la tabla.',
-    'selector.title': 'Seleccione un Objeto Personalizado', 'selector.placeholder': '-- Elija un Objeto --',
-    'selector.button': 'Cargar Panel',
-    'table.addRecord': 'Agregar Registro', 'table.advancedFilter': 'Filtro Avanzado',
-    'table.exportCsv': 'Exportar CSV', 'table.changeObject': 'Cambiar Objeto',
-    'table.searchPlaceholder': 'Buscar en todos los campos...', 'table.restoreColumns': 'Restaurar Columnas',
-    'table.selectColumns': 'Seleccione las columnas visibles...',
-    'summary.showing': 'Mostrando', 'summary.of': 'de', 'summary.records': 'registros',
-    'summary.loadingMore': '(solo los primeros 100 registros se muestran mientras se carga)',
-    'col.id': 'ID', 'col.name': 'Nombre del Registro', 'col.actions': 'Acciones',
-    'row.edit': 'Editar', 'row.delete': 'Eliminar',
-    'filter.title': 'Filtros Avanzados', 'filter.match': 'Coincidir:',
-    'filter.and': 'TODAS las condiciones (Y)', 'filter.or': 'CUALQUIER condición (O)',
-    'filter.hint': '* comodín: abc* comienza con  ·  *xyz termina con  ·  *texto* contiene  ·  Operadores numéricos/fecha usan valores exactos',
-    'filter.addCondition': '+ Agregar Condición', 'filter.apply': 'Aplicar Filtro', 'filter.clearAll': 'Limpiar Todo',
-    'filter.valuePlaceholder': 'valor, prefijo*, *sufijo, *contiene*',
-    'op.eq': '= igual a', 'op.neq': '≠ diferente de', 'op.empty': 'está vacío / nulo',
-    'op.notempty': 'no está vacío', 'op.true': 'es verdadero / sí', 'op.false': 'es falso / no / nulo',
-    'op.gt': '> mayor que', 'op.lt': '< menor que', 'op.gte': '≥ mayor o igual', 'op.lte': '≤ menor o igual',
-    'form.editTitle': 'Editar Registro {id}', 'form.createTitle': 'Crear nuevo registro en {key}',
-    'form.tabDetails': 'Detalles', 'form.tabUsage': 'Uso e Impacto',
-    'form.updateButton': 'Actualizar Registro', 'form.saveButton': 'Guardar Registro', 'form.cancel': 'Cancelar',
-    'form.recordName': 'Nombre del Registro', 'form.selectPlaceholder': '-- Seleccione {field} --',
-    'form.lookupPlaceholder': '-- Escriba para buscar --', 'form.lookupSearch': 'Escriba para buscar {field}...',
-    'form.saving': 'Guardando...', 'form.saveError': 'Error al guardar el registro. Revise la consola.',
-    'form.loadError': 'Error al cargar el formulario.', 'form.recordFallback': 'Registro {id}',
-    'delete.scanning': 'Verificando datos vinculados...', 'delete.discovering': 'Descubriendo campos de búsqueda...',
-    'delete.starting': 'Iniciando verificación...', 'delete.checked': 'Verificado: {label}',
-    'delete.scanTriggers': 'Verificando disparadores', 'delete.scanAutomations': 'Verificando automatizaciones',
-    'delete.scanViews': 'Verificando vistas', 'delete.scanSla': 'Verificando políticas de SLA',
-    'delete.warningTitle': 'Advertencia: "{name}" está en uso',
-    'delete.warningBody': 'Eliminarlo borrará las referencias vinculadas y puede romper condiciones de reglas.',
-    'delete.linkedData': 'Datos vinculados', 'delete.ruleConditions': 'Condiciones de reglas',
-    'delete.viewUsage': 'Ver Uso e Impacto',
-    'delete.confirmQuestion': '¿Está seguro de que desea eliminar permanentemente este registro?',
-    'delete.confirmTitle': 'Confirmar Eliminación',
-    'delete.confirmBody': '¿Está seguro de que desea eliminar <strong>{name}</strong>? Esta acción no se puede deshacer.',
-    'delete.error': 'Error al eliminar el registro. Intente nuevamente.', 'delete.deleting': 'Eliminando...',
-    'delete.linkedItem': 'elemento vinculado', 'delete.linkedItems': 'elementos vinculados',
-    'delete.ruleWord': 'regla', 'delete.rulesWord': 'reglas', 'delete.ruleTypes': '(disparador/automatización/vista/SLA)',
-    'delete.linkedItemsLoseRef': 'Los elementos vinculados perderán su referencia a este registro.',
-    'delete.rulesMayBreak': 'Las reglas con condición que referencia este registro pueden comportarse de forma inesperada.',
-    'delete.checksComplete': '{done} / {total} verificaciones completadas',
-    'usage.discovering': 'Descubriendo campos de búsqueda...', 'usage.viaField': 'vía campo: {title}',
-    'usage.conditionRef': 'condición referencia este registro',
-    'usage.noItems': 'Ningún registro, regla o configuración está vinculada a este elemento.',
-    'usage.moreRecords': '+ Existen más registros (Primeros 100 mostrados)',
-    'export.title': 'Exportar a CSV',
-    'export.rowSingular': '{n} fila será exportada', 'export.rowPlural': '{n} filas serán exportadas',
-    'export.rowSingularFiltered': '{n} fila será exportada (filtrada de {total} en total)',
-    'export.rowPluralFiltered': '{n} filas serán exportadas (filtradas de {total} en total)',
-    'export.question': '¿Qué columnas deben incluirse?',
-    'export.cancel': 'Cancelar', 'export.visible': 'Solo Columnas Visibles', 'export.all': 'Todos los Campos',
-    'rules.triggers': 'Disparadores', 'rules.automations': 'Automatizaciones',
-    'rules.views': 'Vistas', 'rules.sla': 'Políticas de SLA',
-    'table.reverseLookup': 'Búsqueda Inversa',
-    'reverseLookup.title': 'Búsqueda Inversa',
-    'reverseLookup.description': 'Analiza condiciones de reglas para encontrar qué registros de este tipo son referenciados.',
-    'reverseLookup.selectTypes': 'Seleccione los tipos a analizar:',
-    'reverseLookup.includeNames': 'Incluir coincidencias por nombre (puede incluir falsos positivos)',
-    'reverseLookup.run': 'Ejecutar Búsqueda',
-    'reverseLookup.scanning': 'Analizando reglas...',
-    'reverseLookup.found': '{n} registro(s) encontrado(s) con referencias',
-    'reverseLookup.noResults': 'No se encontraron registros de este tipo en las reglas seleccionadas.',
-    'reverseLookup.runAgain': 'Nueva Búsqueda',
-    'reverseLookup.exactMatch': 'exacto',
-    'reverseLookup.nameMatch': 'coincidencia por nombre',
-    'reverseLookup.nameMatchNote': 'Los resultados marcados como "coincidencia por nombre" se basan en similitud y pueden incluir falsos positivos.',
-    'reverseLookup.ticketFields': 'Campos de texto de tickets',
-    'reverseLookup.ticketLabel':  'Ticket',
-    'reverseLookup.userFields':   'Campos de texto de usuarios',
-    'reverseLookup.orgFields':    'Campos de texto de organizaciones',
-    'reverseLookup.textFieldWarning': 'Las búsquedas de campos de texto realizan ~{n} solicitudes. Puede tardar en conjuntos grandes.',
-    'reverseLookup.scope':         'Registros a buscar:',
-    'reverseLookup.scopeAll':      'Todos los registros ({n})',
-    'reverseLookup.scopeFiltered': 'Solo registros visibles ({n})',
-    'reverseLookup.stop':         'Parar',
-    'reverseLookup.stopping':     'Deteniendo...',
-    'reverseLookup.stopped':      'Búsqueda detenida — los resultados mostrados pueden estar incompletos.',
-    'reverseLookup.scopeNoFilter': 'Registros filtrados (aplique una búsqueda o filtro primero)',
-    'app.title': 'Administrador de Registros de Objetos Personalizados',
-    'table.dashboard': 'Panel',
-    'table.searchLoading': 'Disponible después de cargar todos los registros',
-    'export.loadingWarning': 'Esta funcionalidad estará disponible después de cargar todos los registros.',
-    'form.unsavedTitle': 'Cambios sin guardar',
-    'form.unsavedBody': 'Tiene cambios sin guardar que se perderan si sale.',
-    'form.unsavedStay': 'Quedarse',
-    'form.unsavedLeave': 'Salir',
-    'usage.refresh': 'Actualizar',
-    'summary.loadError': '· carga interrumpida, algunos registros pueden faltar',
-    'usage.openLink': 'Abrir en Zendesk',
-    'rel.tickets':       'Tickets',
-    'rel.users':         'Usuarios',
-    'rel.organizations': 'Organizaciones',
-    'usage.possibleMatches': 'Coincidencias Posibles',
-    'usage.possibleMatchesHint': 'Reglas con valor de condición que contiene el nombre de este registro. Verifique manualmente.',
-    'usage.possibleCondRef': 'nombre encontrado en el valor de condición',
-    'delete.possibleMatches': 'coincidencias posibles (por nombre)',
-    'table.findDuplicates': 'Buscar Duplicados',
-    'findDuplicates.title': 'Buscar Registros Duplicados',
-    'findDuplicates.description': 'Encuentra registros con nombres idénticos o similares (sin distinción de mayúsculas/minúsculas; espacios, guiones bajos y guiones son equivalentes).',
-    'findDuplicates.diffHint': 'Los caracteres resaltados muestran diferencias entre los registros de cada grupo.',
-    'findDuplicates.noResults': 'No se encontraron nombres duplicados o similares entre los registros cargados.',
-    'findDuplicates.found': '{n} grupo(s) con nombres duplicados o similares — {total} registros afectados',
-    'findDuplicates.groupCount': '{n} registros',
-    'findDuplicates.selectAll': 'Seleccionar todos en el grupo',
-    'findDuplicates.noneSelected': 'Seleccione registros para eliminar',
-    'findDuplicates.selectedCount': '{n} registro(s) seleccionado(s)',
-    'findDuplicates.deleteSelected': 'Eliminar Seleccionados',
-    'findDuplicates.deleteSelectedN': 'Eliminar Seleccionados ({n})',
-    'findDuplicates.confirmTitle': '¿Eliminar {n} registro(s)?',
-    'findDuplicates.deleteWarning': 'Esta acción no se puede deshacer. Use Editar → Uso e Impacto para verificar datos vinculados antes de eliminar.',
-    'findDuplicates.confirmDeleteBtn': 'Confirmar Eliminación ({n})',
-    'findDuplicates.deleting': 'Eliminando {done} de {total}...',
-    'findDuplicates.deleteSuccess': '{n} registro(s) eliminado(s) correctamente.',
-    'findDuplicates.deleteErrors': '{n} registro(s) no pudieron ser eliminados',
-    'findDuplicates.scanning': 'Verificando dependencias {done} de {total}...',
-    'findDuplicates.scanComplete': 'Verificación completa — revise antes de confirmar',
-    'findDuplicates.dependencies': 'Dependencias',
-    'findDuplicates.noDeps': 'Sin dependencias',
-    'findDuplicates.hasLinked': '{n} elemento(s) vinculado(s)',
-    'findDuplicates.hasRules': '{n} condición(es) de regla',
-    'findDuplicates.hasPossible': '~{n} coincidencia(s) posible(s)',
-    'findDuplicates.exactTitle': 'Duplicados Exactos',
-    'findDuplicates.exactHint': 'Registros idénticos o que difieren solo en mayúsculas/minúsculas, separadores o diacríticos.',
-    'findDuplicates.similarTitle': 'Nombres Similares',
-    'findDuplicates.similarHint': 'Registros con nombres similares — diferente orden de palabras o palabras extras/faltantes como artículos y preposiciones. Verifique manualmente antes de eliminar.',
-    'findDuplicates.noExact': 'No se encontraron duplicados exactos.',
-  },
-};
-
-let i18n = TRANSLATIONS.en;
+// Translations are loaded from assets/i18n/{en,pt-BR,es}.js via <script> tags in
+// iframe.html and attached to window.TRANSLATIONS before main.js runs.
+const TRANSLATIONS = window.TRANSLATIONS || {};
+let i18n = TRANSLATIONS.en || {};
 
 // Returns the translated string for key, replacing {var} placeholders with vars
 function t(key, vars = {}) {
-  let str = i18n[key] ?? TRANSLATIONS.en[key] ?? key;
+  let str = i18n[key] ?? TRANSLATIONS.en?.[key] ?? key;
   Object.entries(vars).forEach(([k, v]) => {
     str = str.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
   });
@@ -456,9 +92,9 @@ async function initLocale() {
   } catch (e) {
     console.warn('[i18n] Could not read Zendesk user locale, defaulting to English.', e);
   }
-  if (locale.startsWith('pt'))      { i18n = TRANSLATIONS['pt-BR']; document.documentElement.lang = 'pt-BR'; }
-  else if (locale.startsWith('es')) { i18n = TRANSLATIONS['es'];    document.documentElement.lang = 'es';   }
-  else                              { i18n = TRANSLATIONS['en'];    document.documentElement.lang = 'en';   }
+  if (locale.startsWith('pt'))      { i18n = TRANSLATIONS['pt-BR'] || TRANSLATIONS.en || {}; document.documentElement.lang = 'pt-BR'; }
+  else if (locale.startsWith('es')) { i18n = TRANSLATIONS['es']    || TRANSLATIONS.en || {}; document.documentElement.lang = 'es';    }
+  else                              { i18n = TRANSLATIONS['en']    || {};                    document.documentElement.lang = 'en';    }
 }
 
 // Applies translations to static HTML elements that carry data-i18n* attributes
@@ -472,27 +108,44 @@ function applyI18nToDOM() {
   });
 }
 
-// DOM Elements
+// DOM Elements — cached at module load time (modules are deferred so DOM is ready)
 const views = {
   loader: document.getElementById('loader'),
   selector: document.getElementById('selector-view'),
   table: document.getElementById('table-view'),
   form: document.getElementById('form-view')
 };
+// Cached separately because it's queried on every row-selection-change event
+const btnBulkDelete = document.getElementById('btn-bulk-delete');
 
-// Initialize the app when the DOM is ready
-document.addEventListener('DOMContentLoaded', async () => {
+// Initialize the app when the DOM is ready.
+// Note: this module is loaded with `type="module"` which implies `defer`, so it may
+// execute AFTER DOMContentLoaded has already fired. Check readyState and run the init
+// immediately in that case — addEventListener alone would silently never trigger.
+const bootApp = async () => {
   await initLocale();
   applyI18nToDOM();
   startApp();
 
   // Toolbar Listeners
   document.getElementById('btn-new-record').addEventListener('click', () => showForm());
+  document.getElementById('btn-bulk-delete').addEventListener('click', () => {
+    if (!tabulatorTable) return;
+    const selected = tabulatorTable.getSelectedData();
+    if (selected.length > 0) showBulkDeleteModal(selected);
+  });
   document.getElementById('btn-back-selector').addEventListener('click', startApp);
   
-  // Tabulator Global Search (now delegates to unified filter)
+  // Tabulator Global Search (now delegates to unified filter).
+  // Debounced so we don't re-run the filter predicate on every keystroke — noticeable
+  // on large datasets where applyTableFilters iterates every row.
+  let _searchDebounceTimer = null;
   document.getElementById('table-search').addEventListener('input', function() {
-    applyTableFilters();
+    if (_searchDebounceTimer) clearTimeout(_searchDebounceTimer);
+    _searchDebounceTimer = setTimeout(() => {
+      _searchDebounceTimer = null;
+      applyTableFilters();
+    }, CONFIG.SEARCH_DEBOUNCE_MS);
   });
 
   // Export CSV
@@ -527,27 +180,94 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Restore Columns Button Listener
   document.getElementById('btn-restore-columns').addEventListener('click', () => {
     if (!currentSchema || !columnSelectorTS || !tabulatorTable) return;
-    
-    const containerWidth = document.getElementById('table-view').clientWidth || window.innerWidth;
-    const availableWidth = containerWidth - 40; 
-    let usedWidth = 215; // 50 (# col) + 165 (actions col) — always-visible, not counted in the loop below
-    const defaultVisible = [];
-
-    const tableCols = tabulatorTable.getColumnDefinitions();
-
-    tableCols.forEach(col => {
-      if (col.field === 'actions' || col.field === 'custom_rownum') return;
-      
-      let colW = col.width || col.minWidth || 150;
-      if (usedWidth + colW <= availableWidth || defaultVisible.length < 2) {
-         defaultVisible.push(col.field);
-         usedWidth += colW;
-      }
-    });
-
-    columnSelectorTS.setValue(defaultVisible);
+    const defaultCols = computeDefaultVisibleCols();
+    columnSelectorTS.setValue(defaultCols);
+    savePrefs(currentCoKey, { visibleColumns: defaultCols });
   });
-});
+
+  // Global keyboard shortcuts:
+  //   Esc     — close topmost open modal (or collapse filter bar if it's the only thing open)
+  //   Ctrl+K  — focus the global search input (also supports Cmd+K on macOS)
+  //   /       — focus the global search input (like GitHub, when not already typing)
+  const MODAL_OVERLAY_IDS = [
+    'delete-modal-overlay',
+    'bulk-delete-overlay',
+    'unsaved-modal-overlay',
+    'reverse-lookup-overlay',
+    'find-duplicates-overlay',
+    'export-modal-overlay',
+  ];
+  const isModalOpen = () => MODAL_OVERLAY_IDS.some(id => {
+    const el = document.getElementById(id);
+    return el && el.style.display && el.style.display !== 'none';
+  });
+  const isTypingTarget = (target) => {
+    const tag = (target?.tagName || '').toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable;
+  };
+
+  document.addEventListener('keydown', (e) => {
+    // Escape always runs first so modals can be dismissed even while typing.
+    if (e.key === 'Escape') {
+      // Close the topmost open overlay. Order matters: last-opened should close first.
+      for (const id of MODAL_OVERLAY_IDS) {
+        const ov = document.getElementById(id);
+        if (ov && ov.style.display !== 'none' && ov.style.display !== '') {
+          // For the unsaved-changes modal, "Stay" is the safe default on Esc.
+          if (id === 'unsaved-modal-overlay') {
+            document.getElementById('unsaved-modal-stay')?.click();
+          } else {
+            ov.style.display = 'none';
+          }
+          e.preventDefault();
+          return;
+        }
+      }
+      // No modal open — collapse the advanced filter bar if it's showing.
+      // Note: Esc hides the bar UI but intentionally keeps activeFilters intact so
+      // the filter remains applied (badge stays on button). This matches the same
+      // behaviour as clicking the Advanced Filter button a second time to close it.
+      const filterBar = document.getElementById('filter-bar');
+      if (filterBar && filterBar.style.display === 'block') {
+        filterBar.style.display = 'none';
+        document.getElementById('btn-advanced-filter')?.classList.remove('active');
+      }
+      return;
+    }
+
+    // Ctrl+K / Cmd+K — focus global search. Blocked while a modal is open or the user is typing
+    // in another field so it doesn't steal focus from forms, filter rows, or modal inputs.
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      if (isModalOpen() || isTypingTarget(e.target)) return;
+      const searchEl = document.getElementById('table-search');
+      if (searchEl && views.table.style.display !== 'none' && !searchEl.disabled) {
+        e.preventDefault();
+        searchEl.focus();
+        searchEl.select();
+      }
+      return;
+    }
+
+    // "/" — same guards as Ctrl+K. Typing check is essential here since "/" is a valid character.
+    if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (isModalOpen() || isTypingTarget(e.target)) return;
+      const searchEl = document.getElementById('table-search');
+      if (searchEl && views.table.style.display !== 'none' && !searchEl.disabled) {
+        e.preventDefault();
+        searchEl.focus();
+        searchEl.select();
+      }
+      return;
+    }
+
+  });
+};
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bootApp);
+} else {
+  bootApp();
+}
 
 // Helper for Tabulator Search
 function customFilter(data, filterParams) {
@@ -563,39 +283,65 @@ function customFilter(data, filterParams) {
   return false;
 }
 
-function escapeHtml(str) {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+// Lightweight toast notifications.
+// level: 'info' | 'success' | 'warning' | 'error'.
+// Auto-dismiss after CONFIG.TOAST_DURATION_MS; click the toast to dismiss early.
+function showToast(message, level = 'info') {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${level}`;
+  toast.setAttribute('role', level === 'error' || level === 'warning' ? 'alert' : 'status');
+  toast.textContent = message;
+  const dismiss = () => {
+    toast.classList.add('toast-fade-out');
+    setTimeout(() => toast.remove(), 200);
+  };
+  toast.addEventListener('click', dismiss);
+  container.appendChild(toast);
+  setTimeout(dismiss, CONFIG.TOAST_DURATION_MS);
 }
 
 function startPreScanTimer() {
-  if (_preScanTimer) { clearInterval(_preScanTimer); }
+  stopPreScanTimer();
   let secs = 0;
   _preScanTimer = setInterval(() => {
     secs++;
     const el = document.getElementById('pre-scan-timer');
-    if (el) el.textContent = `${secs}s`;
+    if (el) el.textContent = formatElapsed(secs);
   }, 1000);
 }
 
+function stopPreScanTimer() {
+  if (_preScanTimer) { clearInterval(_preScanTimer); _preScanTimer = null; }
+}
+
+let _resizeTimer = null;
 function resizeIframe() {
-  // Cap at 75% of the available screen height so the panel never extends
-  // off the bottom of the Zendesk workspace (which is ~75-80% of the screen
-  // after browser chrome + Zendesk top bar are subtracted).
-  // Content taller than this cap scrolls inside the body (overflow-y: auto).
-  const maxH = Math.floor((window.screen.availHeight || 900) * 0.75);
-  const h = Math.min(document.body.scrollHeight + 16, maxH);
-  client.invoke('resize', { width: '100%', height: `${h}px` });
+  // Debounced: many call sites (switchView, dataFiltered, dataSorted,
+  // tableBuilt, DOMContentLoaded) can fire in quick succession. Collapse
+  // bursts into a single client.invoke('resize') call to avoid postMessage
+  // chatter and intermediate-height flicker.
+  if (_resizeTimer) clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(() => {
+    _resizeTimer = null;
+    // Cap at 75% of the available screen height so the panel never extends
+    // off the bottom of the Zendesk workspace (which is ~75-80% of the screen
+    // after browser chrome + Zendesk top bar are subtracted).
+    // Content taller than this cap scrolls inside the body (overflow-y: auto).
+    const maxH = Math.floor((window.screen.availHeight || 900) * CONFIG.IFRAME_MAX_HEIGHT_RATIO);
+    const h = Math.min(document.body.scrollHeight + 16, maxH);
+    client.invoke('resize', { width: '100%', height: `${h}px` });
+  }, CONFIG.RESIZE_DEBOUNCE_MS);
 }
 
 function switchView(activeViewId) {
   if (_loaderTimer) { clearInterval(_loaderTimer); _loaderTimer = null; }
   const loaderTimerEl = document.getElementById('loader-timer');
   if (loaderTimerEl) loaderTimerEl.textContent = '';
+  // Pre-scan timer lives inside the delete-confirm modal / Usage & Impact
+  // loader; leaving the view orphans its DOM element, so stop the tick.
+  stopPreScanTimer();
 
   Object.values(views).forEach(el => el.style.display = 'none');
   views[activeViewId].style.display = 'block';
@@ -605,7 +351,7 @@ function switchView(activeViewId) {
     _loaderTimer = setInterval(() => {
       secs++;
       const el = document.getElementById('loader-timer');
-      if (el) el.textContent = `${secs}s`;
+      if (el) el.textContent = formatElapsed(secs);
     }, 1000);
   }
 
@@ -619,9 +365,11 @@ function switchView(activeViewId) {
   requestAnimationFrame(resizeIframe);
 }
 
-function updateLoaderText(text) {
+function updateLoaderText(text, { skeleton = false } = {}) {
   const loaderTextEl = document.getElementById('loader-text');
   if (loaderTextEl) loaderTextEl.innerText = text;
+  const skeletonEl = document.getElementById('loader-skeleton');
+  if (skeletonEl) skeletonEl.style.display = skeleton ? 'flex' : 'none';
 }
 
 // activeCount: when called from dataFiltered, pass rows.length directly because
@@ -641,7 +389,7 @@ function updateRecordSummary(activeCount) {
 function renderScanProgress(el, done, total, label, elapsedSecs) {
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const timerHtml = (elapsedSecs !== undefined && elapsedSecs >= 0)
-    ? ` <span style="color:#68737d;">· ${elapsedSecs}s</span>`
+    ? ` <span style="color:#68737d;">· ${formatElapsed(elapsedSecs)}</span>`
     : '';
   el.innerHTML = `
     <div style="padding: 20px; text-align: center;">
@@ -698,7 +446,7 @@ async function startApp() {
     } catch (e) {}
   }
   try {
-    const response = await client.request('/api/v2/custom_objects');
+    const response = await zafRequest('/api/v2/custom_objects');
     const customObjects = response.custom_objects;
     renderObjectSelector(customObjects);
     switchView('selector');
@@ -745,6 +493,40 @@ function renderObjectSelector(objects) {
   });
 }
 
+// Returns ordered list of field keys to show by default, prioritising compact and
+// high-value columns. Uses currentSchema (global) so both loadTable and the
+// Restore button share the same logic.
+function computeDefaultVisibleCols() {
+  if (!currentSchema) return [];
+  const typeRank = (type) => {
+    if (!type) return 5;                          // id and unknown
+    if (type === 'checkbox' || type === 'dropdown' || type === 'date' || type === 'integer' || type === 'decimal') return 1;
+    if (type === 'lookup' || type.startsWith('zen:')) return 2;
+    if (type === 'text') return 3;
+    if (type === 'textarea') return 4;
+    return 3;
+  };
+
+  const containerWidth = document.getElementById('table-view').clientWidth || window.innerWidth;
+  const fixedWidth = CONFIG.SELECTION_COL_WIDTH + CONFIG.ROWNUM_COL_WIDTH + CONFIG.TABLE_VIEW_HORIZONTAL_PADDING;
+  const maxDataCols = Math.max(2, Math.floor((containerWidth - fixedWidth) / CONFIG.DEFAULT_COL_WIDTH));
+
+  // Build candidate list: name first, then schema fields ranked by type, id last
+  const candidates = [
+    { field: 'name', rank: 0 },
+    ...currentSchema.map(f => ({ field: f.key, rank: typeRank(f.type) })),
+    { field: 'id', rank: 5 },
+  ];
+  candidates.sort((a, b) => a.rank - b.rank);
+
+  const result = [];
+  for (const c of candidates) {
+    if (result.length >= maxDataCols) break;
+    if (!result.includes(c.field)) result.push(c.field);
+  }
+  return result;
+}
+
 // ----------------------------------------------------
 // VIEW 2: DATA TABLE (TABULATOR)
 // ----------------------------------------------------
@@ -757,14 +539,14 @@ async function loadTable(coKey) {
     isBackgroundLoading = false;
     rowNumMap = null;
 
-    const schemaResponse = await client.request(`/api/v2/custom_objects/${coKey}/fields`);
+    const schemaResponse = await zafRequest(`/api/v2/custom_objects/${coKey}/fields`);
     currentSchema = schemaResponse.custom_object_fields;
 
-    updateLoaderText(t('loader.records'));
-    const firstResponse = await client.request(`/api/v2/custom_objects/${coKey}/records?page[size]=100`);
+    updateLoaderText(t('loader.records'), { skeleton: true });
+    const firstResponse = await zafRequest(`/api/v2/custom_objects/${coKey}/records?page[size]=${CONFIG.CO_RECORDS_PAGE_SIZE}`);
     const firstPageRecords = firstResponse.custom_object_records || [];
 
-    updateLoaderText(t('loader.rendering'));
+    updateLoaderText(t('loader.rendering'), { skeleton: true });
 
     const tableData = firstPageRecords.map(record => ({
       id: record.id,
@@ -784,38 +566,56 @@ async function loadTable(coKey) {
 
     const columns = [
       {
+        // Row-selection checkbox (Tabulator built-in formatter)
+        formatter: "rowSelection",
+        titleFormatter: "rowSelection",
+        hozAlign: "center",
+        headerHozAlign: "center",
+        headerSort: false,
+        width: 36,
+        minWidth: 36,
+        maxWidth: 36,
+        resizable: false,
+        cellClick: function(e, cell) { cell.getRow().toggleSelect(); }
+      },
+      {
         title: "#",
         field: "custom_rownum",
         headerSort: false,
-        width: 50,
+        width: CONFIG.ROWNUM_COL_WIDTH,
         minWidth: 40,
+        maxWidth: CONFIG.ROWNUM_COL_WIDTH,
         hozAlign: "center",
         resizable: false,
         formatter: function(cell) {
           return rowNumMap ? (rowNumMap.get(cell.getData().id) || '') : '';
         }
       },
-      { title: t('col.id'), field: "id", width: 80, minWidth: 80 },
-      { title: t('col.name'), field: "name", minWidth: 150 }
+      { title: t('col.id'), field: "id", width: 80, minWidth: 80, hozAlign: "center", headerHozAlign: "center" },
+      { title: t('col.name'), field: "name", minWidth: CONFIG.DEFAULT_COL_WIDTH }
     ];
 
     currentSchema.forEach((field) => {
       let colDef = { title: field.title, field: field.key };
 
       if (field.type === 'checkbox') {
-        colDef.width    = 100;
-        colDef.minWidth = 80;
-        colDef.hozAlign = "center";
-        colDef.formatter = "tickCross";
+        colDef.width          = 100;
+        colDef.minWidth       = 80;
+        colDef.hozAlign       = "center";
+        colDef.headerHozAlign = "center";
+        colDef.formatter      = "tickCross";
       } else if (field.type === 'date') {
-        colDef.width    = 120;
-        colDef.minWidth = 100;
+        colDef.width          = 120;
+        colDef.minWidth       = 100;
+        colDef.hozAlign       = "center";
+        colDef.headerHozAlign = "center";
       } else if (field.type === 'integer' || field.type === 'decimal') {
-        colDef.width    = 110;
-        colDef.minWidth = 80;
-        colDef.hozAlign = "right";
+        colDef.width          = 110;
+        colDef.minWidth       = 80;
+        colDef.hozAlign       = "center";
+        colDef.headerHozAlign = "center";
       } else {
-        colDef.minWidth = 150;
+        colDef.minWidth = CONFIG.DEFAULT_COL_WIDTH;
       }
 
       columns.push(colDef);
@@ -825,65 +625,113 @@ async function loadTable(coKey) {
       title: t('col.actions'),
       field: "actions",
       formatter: function() {
-        return `<button class="btn-edit">${t('row.edit')}</button><button class="btn-danger">${t('row.delete')}</button>`;
+        return `<div style="display:flex;align-items:center;justify-content:center;height:100%;gap:4px;">
+          <button class="btn-edit" title="${t('row.edit')}"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+          <button class="btn-danger" title="${t('row.delete')}"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
+        </div>`;
       },
-      width: 165,
-      minWidth: 165,
+      width: CONFIG.ACTIONS_COL_WIDTH,
+      minWidth: CONFIG.ACTIONS_COL_WIDTH,
+      maxWidth: CONFIG.ACTIONS_COL_WIDTH,
+      frozen: true,
       headerSort: false,
       cellClick: function(e, cell) {
         const rowData = cell.getRow().getData();
-        if(e.target.classList.contains('btn-edit')) {
+        if (e.target.closest('.btn-edit')) {
           showForm(rowData);
-        } else if (e.target.classList.contains('btn-danger')) {
+        } else if (e.target.closest('.btn-danger')) {
           deleteRecord(rowData.id, rowData.name);
         }
       }
     });
 
     switchView('table');
-    document.getElementById('table-search').value = ''; 
+    document.getElementById('table-search').value = '';
 
-    const containerWidth = document.getElementById('table-view').clientWidth || window.innerWidth;
-    const availableWidth = containerWidth - 40; 
-    let usedWidth = 215; // 50 (# col) + 165 (actions col) — always-visible, not counted in the loop below
-    
+    // Restore saved column visibility if the user has loaded this CO before; fall
+    // back to the width-based autofit when nothing is stored.
+    const savedPrefs = loadPrefs(coKey);
+    const savedVisibleCols = savedPrefs?.visibleColumns;
     const defaultVisibleCols = [];
 
-    columns.forEach(col => {
-      if (col.field === 'actions' || col.field === 'custom_rownum') {
-        col.visible = true;
-        return;
-      }
-
-      let colW = col.width || col.minWidth || 150;
-      
-      if (usedWidth + colW <= availableWidth || defaultVisibleCols.length < 2) {
-         col.visible = true;
-         defaultVisibleCols.push(col.field);
-         usedWidth += colW;
-      } else {
-         col.visible = false;
-      }
-    });
+    if (Array.isArray(savedVisibleCols) && savedVisibleCols.length > 0) {
+      const savedSet = new Set(savedVisibleCols);
+      columns.forEach(col => {
+        if (!col.field || col.field === 'actions' || col.field === 'custom_rownum') {
+          col.visible = true;
+          return;
+        }
+        col.visible = savedSet.has(col.field);
+        if (col.visible) defaultVisibleCols.push(col.field);
+      });
+    } else {
+      const defaultCols = new Set(computeDefaultVisibleCols());
+      columns.forEach(col => {
+        if (!col.field || col.field === 'actions' || col.field === 'custom_rownum') {
+          col.visible = true;
+          return;
+        }
+        col.visible = defaultCols.has(col.field);
+        if (col.visible) defaultVisibleCols.push(col.field);
+      });
+    }
 
     if(tabulatorTable) {
       tabulatorTable.destroy(); 
     }
 
+    const savedPageSize = savedPrefs?.pageSize && CONFIG.TABLE_PAGINATION_SIZES.includes(savedPrefs.pageSize)
+      ? savedPrefs.pageSize
+      : CONFIG.TABLE_PAGINATION_SIZE;
+
     tabulatorTable = new Tabulator("#records-table", {
       data: tableData,
       layout: "fitDataStretch",
       pagination: "local",
-      paginationSize: 15,
+      paginationSize: savedPageSize,
+      paginationSizeSelector: CONFIG.TABLE_PAGINATION_SIZES,
+      paginationElement: document.getElementById("table-pagination-bar"),
+      renderHorizontal: "virtual",    // virtualize wide column sets (many CO fields)
+      selectable: true,               // enable multi-row selection (bulk delete)
+      selectableRangeMode: "click",   // click-to-toggle, shift+click for range
+      locale: true,
+      langs: {
+        "default": {
+          "pagination": {
+            "page_size": "",
+            "first": t('pagination.first'),
+            "first_title": t('pagination.firstTitle'),
+            "last": t('pagination.last'),
+            "last_title": t('pagination.lastTitle'),
+            "prev": t('pagination.prev'),
+            "prev_title": t('pagination.prevTitle'),
+            "next": t('pagination.next'),
+            "next_title": t('pagination.nextTitle'),
+          },
+        },
+      },
       columns: columns,
     });
+
+    // Reset button immediately — previous table may have had rows selected
+    updateBulkDeleteButton(0);
+
+    // data = array of selected row data objects; rows = array of Row components
+    tabulatorTable.on("rowSelectionChanged", (data, rows) => {
+      updateBulkDeleteButton(data.length);
+    });
+
+    // Capture the table reference so the setTimeout callback can verify it's
+    // still the same Tabulator instance (CO switch destroys/recreates the table
+    // — a stale redraw would hit the new table or a destroyed one).
+    const _thisTable = tabulatorTable;
 
     tabulatorTable.on("dataFiltered", function(_filters, rows) {
       // rows is the authoritative list of filtered rows in display order.
       if (_rnRedrawing) { updateRecordSummary(rows.length); return; }
       rowNumMap = new Map(rows.map((row, i) => [row.getData().id, i + 1]));
       setTimeout(() => {
-        if (!tabulatorTable) return;
+        if (tabulatorTable !== _thisTable) return;  // table swapped
         _rnRedrawing = true;
         try { tabulatorTable.redraw(true); } finally { _rnRedrawing = false; }
       }, 0);
@@ -894,13 +742,18 @@ async function loadTable(coKey) {
       if (_rnRedrawing) return;
       rowNumMap = new Map(rows.map((row, i) => [row.getData().id, i + 1]));
       setTimeout(() => {
-        if (!tabulatorTable) return;
+        if (tabulatorTable !== _thisTable) return;
         _rnRedrawing = true;
         try { tabulatorTable.redraw(true); } finally { _rnRedrawing = false; }
       }, 0);
     });
 
+    tabulatorTable.on("pageSizeChanged", (pageSize) => {
+      savePrefs(coKey, { pageSize });
+    });
+
     tabulatorTable.on("tableBuilt", () => {
+
       // Build the initial row-number map only when no filter/search is active.
       // For same-CO reloads where applyTableFilters() was called before tableBuilt fires,
       // the dataFiltered event will build rowNumMap correctly — avoid overwriting it here
@@ -934,8 +787,26 @@ async function loadTable(coKey) {
     colSelectEl.innerHTML = colOptionsHtml;
 
     columnSelectorTS = new TomSelect('#column-selector', {
-      plugins: ['remove_button'],
-      hidePlaceholder: true,
+      plugins: ['checkbox_options'],
+      hidePlaceholder: false,
+      closeAfterSelect: false,
+      hideSelected: false,
+      render: {
+        option: function(data, escape) {
+          return `<div class="option"><span>${escape(data.text)}</span></div>`;
+        },
+        item: function() { return '<span style="display:none"></span>'; },
+        no_results: null,
+      },
+      onInitialize: function() {
+        const updatePlaceholder = () => {
+          const n = this.getValue().length;
+          const input = this.control_input;
+          if (input) input.placeholder = n > 0 ? t('table.columnsSelected', { n }) : (t('table.selectColumns') || 'Select columns…');
+        };
+        this.on('change', updatePlaceholder);
+        updatePlaceholder();
+      },
       onChange: function(values) {
         if(!tabulatorTable) return;
 
@@ -949,6 +820,8 @@ async function loadTable(coKey) {
             tabulatorTable.hideColumn(field);
           }
         });
+        // Persist so the same layout is restored next time this CO loads
+        savePrefs(coKey, { visibleColumns: valArray });
       }
     });
 
@@ -969,14 +842,21 @@ async function loadRemainingPages(nextUrl, token) {
   const loadStart = Date.now();
   const loadElapsed = () => Math.floor((Date.now() - loadStart) / 1000);
 
+  // Single source of truth for the "loading more…" summary — used by both the
+  // interval tick and per-page completion paths to keep the DOM write consistent.
+  // Shows total fetched so far (first page + background) because the Tabulator
+  // table still holds only the first page until the final replaceData.
+  const renderLoadingSummary = () => {
+    const summaryEl = document.getElementById('record-summary');
+    if (!summaryEl || !tabulatorTable) return;
+    const fetched = tabulatorTable.getData().length + allRemainingRows.length;
+    summaryEl.innerHTML = `<strong>${fetched}</strong> ${t('summary.records')} <span style="color:#1f73b7; font-size:12px; font-weight:600;">${t('summary.loadingMore')}</span> <span style="color:#68737d; font-size:12px;">· ${formatElapsed(loadElapsed())}</span>`;
+  };
+
   // Tick every second so the elapsed counter updates even between page fetches
   const timerInterval = setInterval(() => {
     if (!isBackgroundLoading) return;
-    const summaryEl = document.getElementById('record-summary');
-    if (summaryEl && tabulatorTable) {
-      const fetched = tabulatorTable.getData().length + allRemainingRows.length;
-      summaryEl.innerHTML = `<strong>${fetched}</strong> ${t('summary.records')} <span style="color:#1f73b7; font-size:12px; font-weight:600;">${t('summary.loadingMore')}</span> <span style="color:#68737d; font-size:12px;">· ${loadElapsed()}s</span>`;
-    }
+    renderLoadingSummary();
   }, 1000);
 
   try {
@@ -984,22 +864,14 @@ async function loadRemainingPages(nextUrl, token) {
   while (currentEndpoint) {
     if (currentLoadToken !== token) return;
     try {
-      const response = await client.request(currentEndpoint);
+      const response = await zafRequest(currentEndpoint);
       if (currentLoadToken !== token) return;
 
       (response.custom_object_records || []).forEach(record => {
         allRemainingRows.push({ id: record.id, name: record.name, ...record.custom_object_fields });
       });
 
-      // Update only the summary text, no table render.
-      // During background fetch the table still holds only the first page so
-      // getData('active') would show 100, which is confusing. Show total
-      // fetched so far instead: "6357 registros · loading more records..."
-      const summaryEl = document.getElementById('record-summary');
-      if (summaryEl && tabulatorTable) {
-        const fetched = tabulatorTable.getData().length + allRemainingRows.length;
-        summaryEl.innerHTML = `<strong>${fetched}</strong> ${t('summary.records')} <span style="color:#1f73b7; font-size:12px; font-weight:600;">${t('summary.loadingMore')}</span> <span style="color:#68737d; font-size:12px;">· ${loadElapsed()}s</span>`;
-      }
+      renderLoadingSummary();
 
       currentEndpoint = (response.meta?.has_more && (response.links?.next || response.next_page))
         ? (response.links?.next || response.next_page)
@@ -1013,6 +885,7 @@ async function loadRemainingPages(nextUrl, token) {
         const loaded = tabulatorTable.getData().length + allRemainingRows.length;
         errSummaryEl.innerHTML = `<strong>${loaded}</strong> ${t('summary.records')} <span style="color:#cc3340; font-size:12px; font-weight:600;">${t('summary.loadError')}</span>`;
       }
+      showToast(t('toast.recordsTruncated'), 'error');
     }
   }
 
@@ -1035,6 +908,130 @@ async function loadRemainingPages(nextUrl, token) {
   } finally {
     clearInterval(timerInterval);
   }
+}
+
+// ============================================================
+// BULK DELETE (selection-aware)
+// ============================================================
+
+// Toggles the toolbar button visibility + updates the count badge based on how
+// many rows are currently selected in Tabulator.
+function updateBulkDeleteButton(count) {
+  if (!btnBulkDelete) return;
+  if (count > 0) {
+    btnBulkDelete.style.display = '';
+    btnBulkDelete.textContent = t('table.bulkDeleteN', { n: count });
+  } else {
+    btnBulkDelete.style.display = 'none';
+    btnBulkDelete.textContent = t('table.bulkDelete');
+  }
+}
+
+// Shows the bulk-delete confirmation modal.  Unlike single delete we don't run a
+// per-record Usage & Impact scan (could be hundreds of records — that's O(n)
+// slow API calls); instead we let the user opt-in to propagation which uses the
+// existing propagateDeleteLinkedReferences helper once per record.
+async function showBulkDeleteModal(selectedRecords) {
+  const overlay = document.getElementById('bulk-delete-overlay');
+  const modal   = document.getElementById('bulk-delete-modal');
+  const n = selectedRecords.length;
+
+  const close = () => { overlay.style.display = 'none'; };
+
+  // Preview list: first 10 names, then "... and X more"
+  const preview = selectedRecords.slice(0, 10)
+    .map(r => `<li>${escapeHtml(String(r.name || `#${r.id}`))} <span class="badge-id">ID: ${escapeHtml(String(r.id))}</span></li>`)
+    .join('');
+  const moreCount = n - Math.min(n, 10);
+
+  modal.innerHTML = `
+    <h3 style="margin:0 0 8px 0;">${t('bulkDelete.title', { n })}</h3>
+    <p style="color:#68737d; font-size:13px; margin:0 0 12px 0;">${t('bulkDelete.description')}</p>
+    <ul class="bulk-delete-preview">${preview}${moreCount > 0 ? `<li style="color:#68737d;">${t('bulkDelete.more', { n: moreCount })}</li>` : ''}</ul>
+
+    <label class="delete-propagate-label">
+      <input type="checkbox" id="chk-bulk-propagate" />
+      ${t('bulkDelete.propagateLabel')}
+    </label>
+    <p class="delete-propagate-hint">${t('bulkDelete.propagateHint')}</p>
+
+    <div id="bulk-delete-progress" style="display:none; margin-top:14px;">
+      <p id="bulk-delete-status" style="color:#68737d; font-size:13px; margin:0 0 8px 0;"></p>
+      <div class="progress-container"><div class="progress-bar-determinate" id="bulk-delete-bar" style="width:0%"></div></div>
+    </div>
+
+    <div class="modal-footer">
+      <div class="modal-footer-actions">
+        <button id="bulk-delete-cancel" class="btn btn-secondary">${t('form.cancel')}</button>
+        <button id="bulk-delete-confirm" class="btn btn-danger">${t('bulkDelete.confirm', { n })}</button>
+      </div>
+    </div>
+  `;
+
+  const cancelBtn  = document.getElementById('bulk-delete-cancel');
+  const confirmBtn = document.getElementById('bulk-delete-confirm');
+  cancelBtn.onclick = close;
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+
+  confirmBtn.onclick = async () => {
+    const shouldPropagate = document.getElementById('chk-bulk-propagate').checked;
+    confirmBtn.disabled = true;
+    cancelBtn.disabled  = true;
+    overlay.onclick = null;
+
+    const progressEl = document.getElementById('bulk-delete-progress');
+    const statusEl   = document.getElementById('bulk-delete-status');
+    const barEl      = document.getElementById('bulk-delete-bar');
+    progressEl.style.display = 'block';
+
+    let done = 0;
+    let deleted = 0;
+    let failed  = 0;
+    const failedIds = [];
+
+    // Fetch lookup fields once if propagating (same for all records in the CO)
+    const lookupFields = shouldPropagate ? await getLookupFieldsForCurrentCo() : [];
+
+    for (const record of selectedRecords) {
+      done++;
+      statusEl.textContent = t('bulkDelete.progress', {
+        done, total: n, name: String(record.name || record.id).slice(0, 40)
+      });
+      barEl.style.width = `${Math.round((done / n) * 100)}%`;
+
+      try {
+        if (shouldPropagate && lookupFields.length > 0) {
+          await propagateDeleteLinkedReferences(record.id, lookupFields, null);
+        }
+        await zafRequest({
+          url: `/api/v2/custom_objects/${currentCoKey}/records/${record.id}`,
+          type: 'DELETE'
+        });
+        if (tabulatorTable) tabulatorTable.deleteRow(record.id);
+        deleted++;
+      } catch (err) {
+        console.error('[bulk-delete] failed for', record.id, err);
+        failed++;
+        failedIds.push(record.id);
+      }
+    }
+
+    if (tabulatorTable) {
+      // deselectRow() without args clears all — but in Tabulator 5.5.0 the safest
+      // form is iterating selected rows directly to avoid version-specific behaviour.
+      tabulatorTable.getSelectedRows().forEach(r => r.deselect());
+      updateRecordSummary();
+    }
+
+    if (failed === 0) {
+      showToast(t('bulkDelete.success', { n: deleted }), 'success');
+    } else {
+      showToast(t('bulkDelete.partial', { deleted, failed }), 'warning');
+    }
+    close();
+  };
+
+  overlay.style.display = 'flex';
 }
 
 async function deleteRecord(recordId, recordName) {
@@ -1071,7 +1068,7 @@ async function deleteRecord(recordId, recordName) {
     console.warn('Could not complete reference scan', err);
   }
 
-  const { totalFound, totalPossible, relationshipCounts, ruleCounts, possibleCounts } = scanResult;
+  const { totalFound, totalPossible, relationshipCounts, ruleCounts, possibleCounts, lookupFields = [] } = scanResult;
 
   // Populate modal based on findings
   if (totalFound > 0 || totalPossible > 0) {
@@ -1100,6 +1097,13 @@ async function deleteRecord(recordId, recordName) {
         <table style="border-collapse:collapse;">${summaryRows.join('')}</table>
       </div>
       <p style="margin: 16px 0 4px 0;"><button class="btn btn-secondary" id="btn-view-usage-impact">${t('delete.viewUsage')}</button></p>
+      ${scanResult.totalRelationships > 0 ? `
+      <label class="delete-propagate-label">
+        <input type="checkbox" id="chk-propagate-delete" />
+        ${t('delete.propagateLabel', { n: `${scanResult.totalRelationships}${scanResult.relationshipsHasMore ? '+' : ''}` })}
+      </label>
+      <p class="delete-propagate-hint">${t('delete.propagateHint')}</p>
+      ` : ''}
       <p style="margin-top: 16px; font-weight: 600; color: #2f3941;">${t('delete.confirmQuestion')}</p>
     `;
 
@@ -1120,12 +1124,51 @@ async function deleteRecord(recordId, recordName) {
   confirmBtn.disabled = false;
   confirmBtn.onclick = async () => {
     confirmBtn.disabled = true;
-    confirmBtn.textContent = t('delete.deleting');
+    cancelBtn.disabled = true;
+    // Block backdrop-click dismissal while work is in flight. The handler set during
+    // the scan phase (line above) would otherwise hide the modal mid-propagation
+    // while the bulk-update loop keeps running invisibly.
+    overlay.onclick = null;
+
+    const shouldPropagate = document.getElementById('chk-propagate-delete')?.checked === true;
+
     try {
-      await client.request({
+      // Step 1 (optional): clear lookup references on all linked items before deleting
+      if (shouldPropagate && lookupFields.length > 0) {
+        confirmBtn.textContent = t('delete.propagating');
+        bodyEl.innerHTML = `
+          <div style="text-align:center; padding:16px 0;">
+            <p style="color:#68737d; font-size:13px; margin:0 0 12px 0;" id="propagate-status">${t('delete.propagatingStatus')}</p>
+            <div class="progress-container"><div class="progress-bar-indeterminate"></div></div>
+          </div>`;
+
+        const { totalCleared, totalFailed, errors } = await propagateDeleteLinkedReferences(
+          recordId, lookupFields,
+          (fieldLabel, done, total) => {
+            const statusEl = document.getElementById('propagate-status');
+            if (statusEl) statusEl.textContent = t('delete.propagatingField', { field: fieldLabel, done, total });
+          }
+        );
+
+        if (totalFailed > 0) {
+          // Partial failure: warn but continue to delete the record.
+          // Dedupe — two CO types may share title_pluralized (e.g. two COs both labelled "Partners").
+          const uniqueErrors = [...new Set(errors)];
+          showToast(t('delete.propagatePartialError', { n: totalFailed, fields: uniqueErrors.join(', ') }), 'warning');
+        }
+      }
+
+      // Step 2: delete the record itself
+      confirmBtn.textContent = t('delete.deleting');
+      await zafRequest({
         url: `/api/v2/custom_objects/${currentCoKey}/records/${recordId}`,
         type: 'DELETE'
       });
+
+      if (shouldPropagate && lookupFields.length > 0) {
+        showToast(t('delete.propagateSuccess'), 'success');
+      }
+
       if (tabulatorTable) {
         tabulatorTable.deleteRow(recordId);
         updateRecordSummary();
@@ -1134,6 +1177,9 @@ async function deleteRecord(recordId, recordName) {
     } catch (error) {
       console.error('Error deleting record:', error);
       confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+      // Restore backdrop-click dismissal now that nothing is in flight.
+      overlay.onclick = (e) => { if (e.target === overlay) close(); };
       confirmBtn.textContent = t('row.delete');
       const actionsEl = document.getElementById('delete-modal-actions');
       const prevErr = actionsEl?.querySelector('.delete-error-msg');
@@ -1310,8 +1356,9 @@ async function showForm(existingRecord = null, initialTab = 'details') {
     });
 
     formIsDirty = false;
-    document.getElementById('dynamic-form').addEventListener('input',  () => { formIsDirty = true; });
-    document.getElementById('dynamic-form').addEventListener('change', () => { formIsDirty = true; });
+    // 'input' fires for every mutation (typing, select change, checkbox toggle),
+    // so one listener covers all cases — no separate 'change' needed.
+    document.getElementById('dynamic-form').addEventListener('input', () => { formIsDirty = true; });
 
     document.getElementById('btn-cancel-form').addEventListener('click', async () => {
       if (formIsDirty) {
@@ -1367,23 +1414,24 @@ async function getLookupFieldsForCurrentCo() {
 
   // Fetch ticket fields, user fields, org fields, and the CO list all in parallel
   const [ticketFields, userFields, orgFields, customObjects] = await Promise.all([
-    fetchAllPages('/api/v2/ticket_fields.json', 'ticket_fields').catch(e => { console.warn("Could not load ticket fields", e); return []; }),
-    fetchAllPages('/api/v2/user_fields.json', 'user_fields').catch(e => { console.warn("Could not load user fields", e); return []; }),
-    fetchAllPages('/api/v2/organization_fields.json', 'organization_fields').catch(e => { console.warn("Could not load org fields", e); return []; }),
-    fetchAllPages('/api/v2/custom_objects.json', 'custom_objects').catch(e => { console.warn("Could not load COs", e); return []; }),
+    fetchAllPages('/api/v2/ticket_fields.json', 'ticket_fields').catch(e => { console.warn("Could not load ticket fields", e); showToast(t('toast.fieldsLoadFailed', { entity: 'ticket' }), 'warning'); return []; }),
+    fetchAllPages('/api/v2/user_fields.json', 'user_fields').catch(e => { console.warn("Could not load user fields", e); showToast(t('toast.fieldsLoadFailed', { entity: 'user' }), 'warning'); return []; }),
+    fetchAllPages('/api/v2/organization_fields.json', 'organization_fields').catch(e => { console.warn("Could not load org fields", e); showToast(t('toast.fieldsLoadFailed', { entity: 'organization' }), 'warning'); return []; }),
+    fetchAllPages('/api/v2/custom_objects.json', 'custom_objects').catch(e => { console.warn("Could not load COs", e); showToast(t('toast.fieldsLoadFailed', { entity: 'custom object' }), 'warning'); return []; }),
   ]);
 
   ticketFields.forEach(f => {
     if (f.type === 'lookup' && f.relationship_target_type === target)
-      fields.push({ id: f.id, title: f.title, type: 'zen:ticket', label: t('rel.tickets') });
+      // key = field.key (string slug used in custom_fields updates), id = numeric field id
+      fields.push({ id: f.id, key: f.key, title: f.title, type: 'zen:ticket', label: t('rel.tickets') });
   });
   userFields.forEach(f => {
     if (f.type === 'lookup' && f.relationship_target_type === target)
-      fields.push({ id: f.id, title: f.title, type: 'zen:user', label: t('rel.users') });
+      fields.push({ id: f.id, key: f.key, title: f.title, type: 'zen:user', label: t('rel.users') });
   });
   orgFields.forEach(f => {
     if (f.type === 'lookup' && f.relationship_target_type === target)
-      fields.push({ id: f.id, title: f.title, type: 'zen:organization', label: t('rel.organizations') });
+      fields.push({ id: f.id, key: f.key, title: f.title, type: 'zen:organization', label: t('rel.organizations') });
   });
 
   // Reuse already-fetched user/org fields to populate text-field caches,
@@ -1410,107 +1458,6 @@ async function getLookupFieldsForCurrentCo() {
   return fields;
 }
 
-// Normalises a string for name-based fuzzy matching:
-// lowercase, remove diacritics, strip special characters, collapse spaces.
-function normalizeForMatch(str) {
-  if (!str) return '';
-  return String(str)
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')          // strip diacritics
-    .replace(/[^a-z0-9\s<>\-\/|\\]/g, '')    // keep only: letters, digits, spaces, and separators < > - / | \
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-// Common words to ignore when computing similarity keys (pt-BR / es / en)
-const DUPLICATE_STOPWORDS = new Set([
-  'de','da','do','dos','das','em','na','no','nas','nos','para','com','por','ou', // pt
-  'del','el','la','los','las','en','al','con','un','una','y',                    // es
-  'the','of','in','and','or','an','for','to','by','on','with',                   // en
-]);
-
-// Normalises a string for duplicate-name detection:
-// case-insensitive, strips diacritics, treats _ - . as spaces, collapses whitespace.
-// "Ar Condicionado" === "Ar_Condicionado" === "ar-condicionado" after this.
-function normalizeForDuplicate(str) {
-  if (!str) return '';
-  return String(str)
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')   // strip diacritics
-    .replace(/[_\-.]/g, ' ')           // treat _ - . as spaces
-    .replace(/[^a-z0-9\s]/g, '')       // strip remaining special chars
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-// Normalises for similarity matching: removes stopwords and sorts tokens alphabetically so
-// word-order and missing articles/prepositions don't matter.
-// "Gestão de Terceiros" === "Gestão Terceiros" === "Terceiros Gestão" after this.
-// Uses its own base normalization (not normalizeForDuplicate) so that abbreviations like
-// "D&O" split into separate tokens ("d" + "o") instead of merging into the stopword "do".
-// Returns '' when fewer than 2 meaningful tokens remain (avoids trivial false positives).
-function normalizeForSimilar(str) {
-  const base = String(str)
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')  // strip diacritics
-    .replace(/[&+]/g, ' ')            // split abbreviations like D&O into separate tokens
-    .replace(/[_\-.]/g, ' ')          // treat _ - . as spaces
-    .replace(/[^a-z0-9\s]/g, '')      // strip remaining special chars
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  const tokens = base
-    .split(' ')
-    .filter(t => t.length > 0 && !DUPLICATE_STOPWORDS.has(t)) // no min-length: keep A,B,C,1,2…
-    .sort();
-  return tokens.length >= 2 ? tokens.join(' ') : '';
-}
-
-// Returns HTML for `target` with characters highlighted where they differ from `reference`.
-// Uses case-insensitive LCS for alignment; highlights exact-char mismatches and insertions.
-function diffHighlight(reference, target) {
-  if (!reference || reference === target) return escapeHtml(target);
-  const a = reference, b = target;
-  const m = a.length, n = b.length;
-  if (m * n > 40000) return escapeHtml(target); // guard for very long strings
-
-  // Build LCS table (case-insensitive for alignment)
-  const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i-1].toLowerCase() === b[j-1].toLowerCase()
-        ? dp[i-1][j-1] + 1
-        : Math.max(dp[i-1][j], dp[i][j-1]);
-    }
-  }
-
-  // Traceback: collect chars from b, marking those that differ from reference
-  const parts = [];
-  let i = m, j = n;
-  while (j > 0) {
-    if (i > 0 && a[i-1].toLowerCase() === b[j-1].toLowerCase()) {
-      parts.unshift({ ch: b[j-1], d: a[i-1] !== b[j-1] }); // highlight case mismatches
-      i--; j--;
-    } else if (i > 0 && dp[i-1][j] >= dp[i][j-1]) {
-      i--;
-    } else {
-      parts.unshift({ ch: b[j-1], d: true }); // insertion in b (e.g. underscore, extra char)
-      j--;
-    }
-  }
-
-  // Render with grouped <mark> spans for consecutive diffs
-  let html = '', inMark = false;
-  for (const p of parts) {
-    if ( p.d && !inMark) { html += '<mark class="fd-diff">'; inMark = true; }
-    if (!p.d &&  inMark) { html += '</mark>';                inMark = false; }
-    html += escapeHtml(p.ch);
-  }
-  return inMark ? html + '</mark>' : html;
-}
 
 // Returns true if any condition value contains the normalised record name.
 // Requires name to be at least 3 chars to avoid trivial false positives.
@@ -1546,7 +1493,7 @@ async function scanRuleReferences(recordId, ticketFieldIds, recordName, onAdvanc
   };
 
   const normalizedName = normalizeForMatch(recordName);
-  const nameEnabled = normalizedName.length >= 3;
+  const nameEnabled = normalizedName.length >= CONFIG.MIN_CHARS_FOR_RULE_MATCH;
 
   const classify = (conds, exactKey, possibleKey, item) => {
     if (checkConditionsForRecord(conds, ticketFieldIds, recordId)) {
@@ -1710,9 +1657,11 @@ function getRuleUrl(key, id) {
 }
 
 // Wraps nameText in a link that opens in a new tab, or returns plain text if no URL.
+// escapeHtml on url as defense-in-depth: URLs are built from trusted sources
+// (Zendesk subdomain + numeric IDs) but attribute escaping is cheap insurance.
 function linkWrap(nameText, url) {
   if (!url) return escapeHtml(nameText);
-  return `<a href="${url}" target="_blank" rel="noopener noreferrer" title="${t('usage.openLink')}">${escapeHtml(nameText)}</a>`;
+  return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="${t('usage.openLink')}">${escapeHtml(nameText)}</a>`;
 }
 
 // Runs the full scan (relationship fields + triggers/automations/views/SLA) with live progress.
@@ -1720,7 +1669,7 @@ function linkWrap(nameText, url) {
 async function fullReferenceScan(recordId, recordName, onProgress) {
   // Start elapsed time from here so the timer is continuous with the pre-scan phase
   const scanStart = Date.now();
-  if (_preScanTimer) { clearInterval(_preScanTimer); _preScanTimer = null; }
+  stopPreScanTimer();
 
   const fields = await getLookupFieldsForCurrentCo();
   const ticketFieldIds = fields.filter(f => f.type === 'zen:ticket').map(f => f.id);
@@ -1742,6 +1691,7 @@ async function fullReferenceScan(recordId, recordName, onProgress) {
 
   let relationshipHtml = '';
   let totalRelationships = 0;
+  let relationshipsHasMore = false;   // any field returned meta.has_more = true
   const relationshipCounts = [];
 
   const [, ruleResults] = await Promise.all([
@@ -1750,7 +1700,7 @@ async function fullReferenceScan(recordId, recordName, onProgress) {
       for (const field of fields) {
         const endpoint = `/api/v2/zen:custom_object:${currentCoKey}/${recordId}/relationship_fields/${field.id}/${field.type}`;
         try {
-          const response = await client.request(endpoint);
+          const response = await zafRequest(endpoint);
           let dataKey = '';
           let displayField = 'name';
           if (field.type === 'zen:ticket')                    { dataKey = 'tickets';              displayField = 'subject'; }
@@ -1762,6 +1712,7 @@ async function fullReferenceScan(recordId, recordName, onProgress) {
           if (records.length > 0) {
             totalRelationships += records.length;
             const hasMore = response.meta && response.meta.has_more;
+            if (hasMore) relationshipsHasMore = true;
             relationshipCounts.push({ label: field.label, count: records.length + (hasMore ? '+' : '') });
             const countBadge = `${records.length}${hasMore ? '+' : ''}`;
             relationshipHtml += `<details class="related-section">
@@ -1815,8 +1766,193 @@ async function fullReferenceScan(recordId, recordName, onProgress) {
     views:       ruleResults.possibleViews.length,
     sla:         ruleResults.possibleSla.length,
   };
-  return { relationshipHtml, rulesHtml, possibleRulesHtml, totalRelationships, totalRules, totalPossible, totalFound: totalRelationships + totalRules, relationshipCounts, ruleCounts, possibleCounts };
+  return { relationshipHtml, rulesHtml, possibleRulesHtml, totalRelationships, relationshipsHasMore, totalRules, totalPossible, totalFound: totalRelationships + totalRules, relationshipCounts, ruleCounts, possibleCounts, lookupFields: fields };
 }
+
+// ============================================================
+// DELETE PROPAGATION HELPERS
+// ============================================================
+
+// Fetches ALL item IDs linked to recordId via a specific relationship field,
+// handling Zendesk cursor pagination.  Returns array of numeric/string IDs.
+async function fetchLinkedItemIds(recordId, field) {
+  const ids = [];
+  let dataKey = '';
+  if (field.type === 'zen:ticket')                      dataKey = 'tickets';
+  else if (field.type === 'zen:user')                   dataKey = 'users';
+  else if (field.type === 'zen:organization')           dataKey = 'organizations';
+  else if (field.type.startsWith('zen:custom_object:')) dataKey = 'custom_object_records';
+  if (!dataKey) return ids;
+
+  let endpoint = `/api/v2/zen:custom_object:${currentCoKey}/${recordId}/relationship_fields/${field.id}/${field.type}`;
+  while (endpoint) {
+    try {
+      const resp = await zafRequest(endpoint);
+      (resp[dataKey] || []).forEach(r => ids.push(r.id));
+      endpoint = (resp.meta?.has_more && resp.links?.next) ? resp.links.next : null;
+    } catch (e) {
+      console.warn('[propagate] fetchLinkedItemIds failed', field.id, e);
+      endpoint = null;
+    }
+  }
+  return ids;
+}
+
+// Waits for a Zendesk async job (returned by *_many bulk endpoints) to finish.
+// Polls /api/v2/job_statuses/{id}.json until status is completed/failed/killed.
+// Times out after ~30s so the user isn't blocked forever on a stuck job.
+async function waitForJobStatus(jobUrl, maxWaitMs = 30000) {
+  if (!jobUrl) return { status: 'unknown' };
+  // Zendesk bulk update endpoints return absolute URLs in job_status.url
+  // (e.g. https://account.zendesk.com/api/v2/job_statuses/xxx.json).
+  // ZAF client.request requires a relative path, so strip the origin.
+  let pollPath = jobUrl;
+  try {
+    const parsed = new URL(jobUrl);
+    pollPath = parsed.pathname + parsed.search;
+  } catch (_) { /* jobUrl was already relative — use as-is */ }
+
+  const start = Date.now();
+  let delay = 500;
+  while (Date.now() - start < maxWaitMs) {
+    try {
+      const resp = await zafRequest({ url: pollPath, type: 'GET' });
+      const status = resp.job_status?.status || resp.status;
+      if (status === 'completed' || status === 'failed' || status === 'killed') {
+        return resp.job_status || resp;
+      }
+    } catch (e) {
+      console.warn('[propagate] job_status poll failed', e);
+      return { status: 'unknown' };
+    }
+    await new Promise(r => setTimeout(r, delay));
+    delay = Math.min(delay * 1.5, 3000);
+  }
+  return { status: 'timeout' };
+}
+
+// Nulls out a lookup field on a batch of items using the Zendesk bulk-update APIs.
+// Returns { cleared, failed } counts.
+//
+// Bulk endpoints (tickets/users/organizations update_many) are ASYNCHRONOUS on Zendesk:
+// they return 202 Accepted with a job_status URL. We poll that URL until the job is
+// complete so the caller knows the updates are actually applied before proceeding
+// with the DELETE. Without the poll, we'd have a race window where the record is
+// deleted while lookup fields still reference it.
+async function clearFieldOnItems(field, ids, onProgress) {
+  const BULK = 100;
+  let cleared = 0;
+  let failed  = 0;
+
+  const runBulk = async (url, payload) => {
+    const resp = await zafRequest({
+      url, type: 'PUT', contentType: 'application/json', data: JSON.stringify(payload)
+    });
+    const jobUrl = resp.job_status?.url;
+    const result = await waitForJobStatus(jobUrl);
+    return result;
+  };
+
+  for (let i = 0; i < ids.length; i += BULK) {
+    const chunk = ids.slice(i, i + BULK);
+    if (onProgress) onProgress(Math.min(i + BULK, ids.length), ids.length);
+
+    // If the Zendesk bulk job didn't complete (timeout/unknown), we can't tell which
+    // items succeeded. Count the whole chunk as failed so the user sees a warning
+    // rather than a silent "cleared" that may be incorrect.
+    const countJobOutcome = (job) => {
+      if (job?.status === 'timeout' || job?.status === 'unknown' || !job) {
+        return { ok: 0, fail: chunk.length };
+      }
+      const jobFailed = (job.results || []).filter(r => r.status !== 'Updated' && r.success !== true).length;
+      return { ok: chunk.length - jobFailed, fail: jobFailed };
+    };
+
+    try {
+      if (field.type === 'zen:ticket') {
+        // Ticket custom fields use numeric field id
+        const ticketsPayload = chunk.map(id => ({
+          id, custom_fields: [{ id: field.id, value: null }]
+        }));
+        const job = await runBulk('/api/v2/tickets/update_many.json', { tickets: ticketsPayload });
+        const { ok, fail } = countJobOutcome(job);
+        cleared += ok; failed += fail;
+
+      } else if (field.type === 'zen:user') {
+        // User custom fields use string key
+        const usersPayload = chunk.map(id => ({
+          id, user_fields: { [field.key]: null }
+        }));
+        const job = await runBulk('/api/v2/users/update_many.json', { users: usersPayload });
+        const { ok, fail } = countJobOutcome(job);
+        cleared += ok; failed += fail;
+
+      } else if (field.type === 'zen:organization') {
+        // Org custom fields use string key
+        const orgsPayload = chunk.map(id => ({
+          id, organization_fields: { [field.key]: null }
+        }));
+        const job = await runBulk('/api/v2/organizations/update_many.json', { organizations: orgsPayload });
+        const { ok, fail } = countJobOutcome(job);
+        cleared += ok; failed += fail;
+
+      } else if (field.type.startsWith('zen:custom_object:')) {
+        // CO records must be updated one at a time (no bulk endpoint).
+        // Promise.allSettled lets partial failures coexist without throwing,
+        // so we can count successes and failures explicitly from the results.
+        const coKey = field.type.replace('zen:custom_object:', '');
+        const results = await Promise.allSettled(chunk.map(id =>
+          zafRequest({
+            url: `/api/v2/custom_objects/${coKey}/records/${id}`,
+            type: 'PATCH',
+            contentType: 'application/json',
+            data: JSON.stringify({ custom_object_record: { custom_object_fields: { [field.id]: null } } })
+          })
+        ));
+        const ok = results.filter(r => r.status === 'fulfilled').length;
+        cleared += ok;
+        failed  += chunk.length - ok;
+        results.forEach((r, idx) => {
+          if (r.status === 'rejected') console.warn('[propagate] CO record update failed', chunk[idx], r.reason);
+        });
+      }
+    } catch (e) {
+      console.warn('[propagate] bulk update failed for field', field.id, e);
+      failed += chunk.length;
+    }
+  }
+  return { cleared, failed };
+}
+
+// Orchestrator: for each lookup field that has linked items, fetch all item IDs
+// and clear the field.  Calls onProgress(fieldLabel, clearedSoFar, total) after each field.
+// Returns { totalCleared, totalFailed, errors[] }.
+async function propagateDeleteLinkedReferences(recordId, lookupFields, onProgress) {
+  let totalCleared = 0;
+  let totalFailed  = 0;
+  const errors     = [];
+
+  for (const field of lookupFields) {
+    let ids;
+    try {
+      ids = await fetchLinkedItemIds(recordId, field);
+    } catch (e) {
+      errors.push(field.label);
+      continue;
+    }
+    if (ids.length === 0) continue;
+
+    const { cleared, failed } = await clearFieldOnItems(field, ids, (done, total) => {
+      if (onProgress) onProgress(field.label, done, total);
+    });
+    totalCleared += cleared;
+    totalFailed  += failed;
+    if (failed > 0) errors.push(field.label);
+  }
+  return { totalCleared, totalFailed, errors };
+}
+
+// ============================================================
 
 let _relatedScanActive = false;
 
@@ -1840,10 +1976,13 @@ async function loadRelatedRecords(recordId, recordName) {
       (done, total, label, secs) => renderScanProgress(container, done, total, label, secs)
     );
 
-    // Text-field search across tickets, users and organizations — all three run in parallel
+    // Text-field search across tickets, users and organizations — all three run in parallel.
+    // Only runs when the record name produces a non-empty phrase with at least
+    // MIN_CHARS_FOR_TEXT_SEARCH meaningful characters after sanitization.
     let ticketTextHtml = '', userTextHtml = '', orgTextHtml = '';
-    if (recordName && normalizeForMatch(recordName).length >= 5) {
-      const phrase = recordName.replace(/[<>\/|\\]/g, ' ').replace(/"/g, '').replace(/\s+/g, ' ').trim();
+    const phrase = sanitizeSearchPhrase(recordName || '');
+    const phraseNorm = normalizeForMatch(phrase);
+    if (phrase.length >= CONFIG.MIN_CHARS_FOR_TEXT_SEARCH && phraseNorm.length >= CONFIG.MIN_CHARS_FOR_TEXT_SEARCH) {
 
       // Fetch field lists in parallel, then fire all three searches in parallel
       const [ticketFieldIds, userFieldKeys, orgFieldKeys] = await Promise.all([
@@ -1853,36 +1992,53 @@ async function loadRelatedRecords(recordId, recordName) {
       await Promise.all([
         // Tickets
         (async () => {
-          if (!ticketFieldIds.length) return;
-          const q = ticketFieldIds.slice(0, 15).map(id => `custom_fields_${id}:"${phrase}"`).join(' OR ');
+          const ids = ticketFieldIds.slice(0, CONFIG.RL_MAX_FIELDS_PER_QUERY);
+          if (!ids.length) return;
+          const q = ids.map(id => `custom_fields_${id}:"${phrase}"`).join(' OR ');
           try {
-            const resp = await client.request({ url: `/api/v2/search.json?query=${encodeURIComponent(`type:ticket (${q})`)}&page[size]=25`, type: 'GET' });
+            const resp = await zafRequest({ url: `/api/v2/search.json?query=${encodeURIComponent(`type:ticket (${q})`)}&per_page=${CONFIG.SEARCH_RESULTS_PAGE_SIZE}`, type: 'GET' });
             const items = resp.results || [];
             if (items.length > 0) ticketTextHtml = buildEntitySearchHtml(items, t('reverseLookup.ticketFields'),
               item => zendeskBaseUrl ? `${zendeskBaseUrl}/agent/tickets/${item.id}` : null, item => item.subject);
-          } catch (e) { console.warn('Usage & Impact ticket text search failed:', e); }
+          } catch (e) {
+            const status = e?.status ?? e?.statusCode;
+            console.warn(`Usage & Impact ticket text search failed (HTTP ${status}):`, e);
+            // 403/404 = permission or Search API not enabled — don't toast, just skip silently.
+            // Other errors (500, network) = warn the user.
+            if (status !== 403 && status !== 404) showToast(t('toast.usageTicketFailed'), 'warning');
+          }
         })(),
         // Users
         (async () => {
-          if (!userFieldKeys.length) return;
-          const q = userFieldKeys.slice(0, 15).map(k => `user_fields.${k}:"${phrase}"`).join(' OR ');
+          const keys = userFieldKeys.slice(0, CONFIG.RL_MAX_FIELDS_PER_QUERY);
+          if (!keys.length) return;
+          const q = keys.map(k => `user_fields.${k}:"${phrase}"`).join(' OR ');
           try {
-            const resp = await client.request({ url: `/api/v2/search.json?query=${encodeURIComponent(`type:user (${q})`)}&page[size]=25`, type: 'GET' });
+            const resp = await zafRequest({ url: `/api/v2/search.json?query=${encodeURIComponent(`type:user (${q})`)}&per_page=${CONFIG.SEARCH_RESULTS_PAGE_SIZE}`, type: 'GET' });
             const items = resp.results || [];
             if (items.length > 0) userTextHtml = buildEntitySearchHtml(items, t('reverseLookup.userFields'),
               item => zendeskBaseUrl ? `${zendeskBaseUrl}/agent/users/${item.id}/tickets` : null, item => item.name || item.email);
-          } catch (e) { console.warn('Usage & Impact user text search failed:', e); }
+          } catch (e) {
+            const status = e?.status ?? e?.statusCode;
+            console.warn(`Usage & Impact user text search failed (HTTP ${status}):`, e);
+            if (status !== 403 && status !== 404) showToast(t('toast.usageUserFailed'), 'warning');
+          }
         })(),
         // Organizations
         (async () => {
-          if (!orgFieldKeys.length) return;
-          const q = orgFieldKeys.slice(0, 15).map(k => `organization_fields.${k}:"${phrase}"`).join(' OR ');
+          const keys = orgFieldKeys.slice(0, CONFIG.RL_MAX_FIELDS_PER_QUERY);
+          if (!keys.length) return;
+          const q = keys.map(k => `organization_fields.${k}:"${phrase}"`).join(' OR ');
           try {
-            const resp = await client.request({ url: `/api/v2/search.json?query=${encodeURIComponent(`type:organization (${q})`)}&page[size]=25`, type: 'GET' });
+            const resp = await zafRequest({ url: `/api/v2/search.json?query=${encodeURIComponent(`type:organization (${q})`)}&per_page=${CONFIG.SEARCH_RESULTS_PAGE_SIZE}`, type: 'GET' });
             const items = resp.results || [];
             if (items.length > 0) orgTextHtml = buildEntitySearchHtml(items, t('reverseLookup.orgFields'),
               item => zendeskBaseUrl ? `${zendeskBaseUrl}/agent/organizations/${item.id}/tickets` : null, item => item.name);
-          } catch (e) { console.warn('Usage & Impact org text search failed:', e); }
+          } catch (e) {
+            const status = e?.status ?? e?.statusCode;
+            console.warn(`Usage & Impact org text search failed (HTTP ${status}):`, e);
+            if (status !== 403 && status !== 404) showToast(t('toast.usageOrgFailed'), 'warning');
+          }
         })(),
       ]);
     }
@@ -1944,7 +2100,7 @@ async function handleFormSubmit(event) {
       : `/api/v2/custom_objects/${currentCoKey}/records`;
     const method = isEdit ? 'PATCH' : 'POST';
 
-    const result = await client.request({
+    const result = await zafRequest({
       url: url,
       type: method,
       contentType: 'application/json',
@@ -2054,10 +2210,22 @@ function renderFilterBar(columns, coKey) {
   filterColumns = columns.filter(c => c.field !== 'actions' && c.field !== 'custom_rownum');
 
   if (coKey !== lastFilterCoKey) {
-    // Different CO: clear filter state and DOM rows
+    // Different CO: clear in-memory filter state, then try to rehydrate from prefs
     activeFilters = [];
     document.getElementById('filter-rows').innerHTML = '';
     lastFilterCoKey = coKey;
+
+    const savedFilters = loadPrefs(coKey)?.filters;
+    if (savedFilters?.rows?.length > 0) {
+      // Restore the logic radio
+      const logicRadio = document.querySelector(`input[name="filter-logic"][value="${savedFilters.logic || 'and'}"]`);
+      if (logicRadio) logicRadio.checked = true;
+      // Rebuild each row from saved values — validate field still exists in current schema
+      const validFields = new Set(filterColumns.map(c => c.field));
+      savedFilters.rows.filter(r => validFields.has(r.field)).forEach(r => addFilterRow(r));
+      collectFiltersFromDOM();
+      applyTableFilters();
+    }
     updateFilterBadge();
   } else {
     // Same CO reloaded (after save/delete): re-apply existing filters to the new table instance
@@ -2070,6 +2238,7 @@ function renderFilterBar(columns, coKey) {
     collectFiltersFromDOM();
     applyTableFilters();
     updateFilterBadge();
+    persistActiveFilters(coKey);
   };
 
   document.getElementById('btn-clear-filters').onclick = () => {
@@ -2077,10 +2246,19 @@ function renderFilterBar(columns, coKey) {
     document.getElementById('filter-rows').innerHTML = '';
     applyTableFilters();
     updateFilterBadge();
+    persistActiveFilters(coKey);
   };
 }
 
-function addFilterRow() {
+// Serialises the current filter state (logic radio + activeFilters) into prefs,
+// so re-opening the same CO restores the same conditions.
+function persistActiveFilters(coKey) {
+  if (!coKey) return;
+  const logic = document.querySelector('input[name="filter-logic"]:checked')?.value || 'and';
+  savePrefs(coKey, { filters: { logic, rows: activeFilters.slice() } });
+}
+
+function addFilterRow(initial) {
   const colOptions = filterColumns.map(c =>
     `<option value="${escapeHtml(c.field)}">${escapeHtml(c.title)}</option>`
   ).join('');
@@ -2102,20 +2280,32 @@ function addFilterRow() {
       <option value="lte">${t('op.lte')}</option>
     </select>
     <input type="text" class="filter-value" placeholder="${t('filter.valuePlaceholder')}" />
-    <button type="button" class="filter-row-remove" title="Remove condition">×</button>
+    <button type="button" class="filter-row-remove" title="${t('filter.rowRemove')}">×</button>
   `;
 
+  const fieldEl    = rowEl.querySelector('.filter-field');
   const operatorEl = rowEl.querySelector('.filter-operator');
   const valueEl    = rowEl.querySelector('.filter-value');
+
+  // Rehydrate if initial values supplied (filter-bar restore from prefs)
+  if (initial) {
+    if (initial.field)    fieldEl.value    = initial.field;
+    if (initial.operator) operatorEl.value = initial.operator;
+    if (initial.value)    valueEl.value    = initial.value;
+  }
+
   operatorEl.addEventListener('change', () => {
     valueEl.style.visibility = NO_VALUE_OPS.has(operatorEl.value) ? 'hidden' : 'visible';
   });
+  // Apply initial no-value-op visibility rule
+  if (NO_VALUE_OPS.has(operatorEl.value)) valueEl.style.visibility = 'hidden';
 
   rowEl.querySelector('.filter-row-remove').onclick = () => {
     rowEl.remove();
     collectFiltersFromDOM();
     applyTableFilters();
     updateFilterBadge();
+    persistActiveFilters(lastFilterCoKey);
   };
   document.getElementById('filter-rows').appendChild(rowEl);
 }
@@ -2265,7 +2455,7 @@ async function getTextOrgFieldKeys() {
 // Generic: builds a collapsible possible-match section for any entity type.
 // urlFn(item) → URL string or null; labelFn(item) → display string.
 function buildEntitySearchHtml(items, sectionLabel, urlFn, labelFn) {
-  const hasMore = items.length >= 25;
+  const hasMore = items.length >= CONFIG.SEARCH_RESULTS_PAGE_SIZE;
   let html = `<details class="related-section">
     <summary>
       <span>${escapeHtml(sectionLabel)} <span class="badge-id badge-possible">${items.length}${hasMore ? '+' : ''}</span></span>
@@ -2276,8 +2466,11 @@ function buildEntitySearchHtml(items, sectionLabel, urlFn, labelFn) {
   items.forEach(item => {
     const label = escapeHtml(labelFn(item) || `#${item.id}`);
     const url   = urlFn(item);
+    // escapeHtml on the url as defense-in-depth: Zendesk IDs are numeric in practice,
+    // but the url itself is built as a template string and could in theory embed
+    // attacker-controlled content if the API ever returned malformed IDs.
     const link  = url
-      ? `<a href="${url}" target="_blank" rel="noopener noreferrer" title="${t('usage.openLink')}">${label}</a>`
+      ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="${t('usage.openLink')}">${label}</a>`
       : label;
     html += `<li>
       <span>${link}</span>
@@ -2311,7 +2504,7 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
   const timerInterval = setInterval(() => {
     secs++;
     const el = document.getElementById('rl-timer');
-    if (el) el.textContent = `${secs}s`;
+    if (el) el.textContent = formatElapsed(secs);
   }, 1000);
 
   const updateStatus = (msg) => {
@@ -2333,7 +2526,7 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
     const normRecords = includeNames
       ? tableRecords
           .map(r => ({ record: r, normName: r.name ? normalizeForMatch(r.name) : '' }))
-          .filter(nr => nr.normName.length >= 3)
+          .filter(nr => nr.normName.length >= CONFIG.MIN_CHARS_FOR_RULE_MATCH)
       : [];
 
     // results: Map<recordId, {record, items[]}>
@@ -2372,7 +2565,7 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
         );
         normRecords.forEach(nr => {
           if (exactMatchedIds.has(String(nr.record.id))) return; // already exact
-          const matchIdx = normVals.findIndex(v => v.length >= 3 && v.includes(nr.normName));
+          const matchIdx = normVals.findIndex(v => v.length >= CONFIG.MIN_CHARS_FOR_RULE_MATCH && v.includes(nr.normName));
           if (matchIdx >= 0) {
             addResult(nr.record, typeLabel, ruleLabel, ruleId, ruleUrl, true, conds[matchIdx]);
           }
@@ -2437,24 +2630,29 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
     await Promise.all(tasks);
 
     // Pre-compute once — reused by all three text-field search loops below
-    const searchable = tableRecords.filter(r => r.name && normalizeForMatch(r.name).length >= 5);
+    const searchable = tableRecords.filter(r => r.name && normalizeForMatch(r.name).length >= CONFIG.MIN_CHARS_FOR_TEXT_SEARCH);
+
+    // Accumulated over the three section loops, reported as a single toast at the end
+    // so a full outage doesn't flood the user with 3 simultaneous warnings.
+    const erroredSections = [];
 
     // Batched parallel ticket text-field search (custom fields only, not subject/description/comments)
     if (selectedTypes.includes('ticketFields') && !_rlCancelled) {
       const textFieldIds = await getTextTicketFieldIds();
       if (textFieldIds.length > 0) {
-        // Cap at 15 fields to keep the query within Zendesk's URL length limit
-        const queryFieldIds = textFieldIds.slice(0, 15);
-        const BATCH = 5;
+        // Cap fields per query to keep the URL within Zendesk's length limit
+        const queryFieldIds = textFieldIds.slice(0, CONFIG.RL_MAX_FIELDS_PER_QUERY);
+        const BATCH = CONFIG.RL_RECORDS_PER_BATCH;
+        let sectionErrored = false;
         for (let i = 0; i < searchable.length && !_rlCancelled; i += BATCH) {
           const batch = searchable.slice(i, i + BATCH);
           updateStatus(`${t('reverseLookup.ticketFields')}: ${Math.min(i + BATCH, searchable.length)}/${searchable.length}`);
           await Promise.all(batch.map(async record => {
-            const phrase    = record.name.replace(/[<>\/|\\]/g, ' ').replace(/"/g, '').replace(/\s+/g, ' ').trim();
+            const phrase    = sanitizeSearchPhrase(record.name);
             const rawQuery  = `type:ticket (${queryFieldIds.map(id => `custom_fields_${id}:"${phrase}"`).join(' OR ')})`;
             try {
-              const resp = await client.request({
-                url:  `/api/v2/search.json?query=${encodeURIComponent(rawQuery)}&page[size]=25`,
+              const resp = await zafRequest({
+                url:  `/api/v2/search.json?query=${encodeURIComponent(rawQuery)}&per_page=${CONFIG.SEARCH_RESULTS_PAGE_SIZE}`,
                 type: 'GET'
               });
               (resp.results || []).forEach(ticket => {
@@ -2467,9 +2665,10 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
                   true
                 );
               });
-            } catch (e) { console.warn('[RL] ticket field search failed for', record.name, e); }
+            } catch (e) { console.warn('[RL] ticket field search failed for', record.name, e); sectionErrored = true; }
           }));
         }
+        if (sectionErrored) erroredSections.push(t('reverseLookup.ticketFields'));
       }
     }
 
@@ -2477,23 +2676,25 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
     if (selectedTypes.includes('userFields') && !_rlCancelled) {
       const userFieldKeys = await getTextUserFieldKeys();
       if (userFieldKeys.length > 0) {
-        const queryKeys = userFieldKeys.slice(0, 15);
-        const BATCH = 5;
+        const queryKeys = userFieldKeys.slice(0, CONFIG.RL_MAX_FIELDS_PER_QUERY);
+        const BATCH = CONFIG.RL_RECORDS_PER_BATCH;
+        let sectionErrored = false;
         for (let i = 0; i < searchable.length && !_rlCancelled; i += BATCH) {
           const batch = searchable.slice(i, i + BATCH);
           updateStatus(`${t('reverseLookup.userFields')}: ${Math.min(i + BATCH, searchable.length)}/${searchable.length}`);
           await Promise.all(batch.map(async record => {
-            const phrase   = record.name.replace(/[<>\/|\\]/g, ' ').replace(/"/g, '').replace(/\s+/g, ' ').trim();
+            const phrase   = sanitizeSearchPhrase(record.name);
             const rawQuery = `type:user (${queryKeys.map(k => `user_fields.${k}:"${phrase}"`).join(' OR ')})`;
             try {
-              const resp = await client.request({ url: `/api/v2/search.json?query=${encodeURIComponent(rawQuery)}&page[size]=25`, type: 'GET' });
+              const resp = await zafRequest({ url: `/api/v2/search.json?query=${encodeURIComponent(rawQuery)}&per_page=${CONFIG.SEARCH_RESULTS_PAGE_SIZE}`, type: 'GET' });
               (resp.results || []).forEach(user => {
                 addResult(record, t('reverseLookup.userFields'), user.name || user.email || `#${user.id}`,
                   user.id, zendeskBaseUrl ? `${zendeskBaseUrl}/agent/users/${user.id}/tickets` : null, true);
               });
-            } catch (e) { console.warn('[RL] user field search failed for', record.name, e); }
+            } catch (e) { console.warn('[RL] user field search failed for', record.name, e); sectionErrored = true; }
           }));
         }
+        if (sectionErrored) erroredSections.push(t('reverseLookup.userFields'));
       }
     }
 
@@ -2501,24 +2702,31 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
     if (selectedTypes.includes('orgFields') && !_rlCancelled) {
       const orgFieldKeys = await getTextOrgFieldKeys();
       if (orgFieldKeys.length > 0) {
-        const queryKeys = orgFieldKeys.slice(0, 15);
-        const BATCH = 5;
+        const queryKeys = orgFieldKeys.slice(0, CONFIG.RL_MAX_FIELDS_PER_QUERY);
+        const BATCH = CONFIG.RL_RECORDS_PER_BATCH;
+        let sectionErrored = false;
         for (let i = 0; i < searchable.length && !_rlCancelled; i += BATCH) {
           const batch = searchable.slice(i, i + BATCH);
           updateStatus(`${t('reverseLookup.orgFields')}: ${Math.min(i + BATCH, searchable.length)}/${searchable.length}`);
           await Promise.all(batch.map(async record => {
-            const phrase   = record.name.replace(/[<>\/|\\]/g, ' ').replace(/"/g, '').replace(/\s+/g, ' ').trim();
+            const phrase   = sanitizeSearchPhrase(record.name);
             const rawQuery = `type:organization (${queryKeys.map(k => `organization_fields.${k}:"${phrase}"`).join(' OR ')})`;
             try {
-              const resp = await client.request({ url: `/api/v2/search.json?query=${encodeURIComponent(rawQuery)}&page[size]=25`, type: 'GET' });
+              const resp = await zafRequest({ url: `/api/v2/search.json?query=${encodeURIComponent(rawQuery)}&per_page=${CONFIG.SEARCH_RESULTS_PAGE_SIZE}`, type: 'GET' });
               (resp.results || []).forEach(org => {
                 addResult(record, t('reverseLookup.orgFields'), org.name || `#${org.id}`,
                   org.id, zendeskBaseUrl ? `${zendeskBaseUrl}/agent/organizations/${org.id}/tickets` : null, true);
               });
-            } catch (e) { console.warn('[RL] org field search failed for', record.name, e); }
+            } catch (e) { console.warn('[RL] org field search failed for', record.name, e); sectionErrored = true; }
           }));
         }
+        if (sectionErrored) erroredSections.push(t('reverseLookup.orgFields'));
       }
+    }
+
+    // Single summarized toast for any failures across the three loops
+    if (erroredSections.length > 0) {
+      showToast(t('toast.rlPartialFailure', { sections: erroredSections.join(', ') }), 'warning');
     }
 
     const wasStopped = _rlCancelled;
@@ -2541,9 +2749,11 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
       <p style="font-size:13px; color:#68737d; margin:0 0 14px 0;">${t('reverseLookup.found', { n: results.size })}</p>
       ${stoppedNote}${nameMatchNote}
       <div id="rl-results-container">${resultsHtml || `<p style="color:#68737d;">${t('reverseLookup.noResults')}</p>`}</div>
-      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:20px; padding-top:16px; border-top:1px solid #e9ebed;">
-        <button id="rl-btn-again" class="btn btn-secondary">${t('reverseLookup.runAgain')}</button>
-        <button id="rl-btn-close" class="btn btn-secondary">${t('form.cancel')}</button>
+      <div class="modal-footer">
+        <div class="modal-footer-actions">
+          <button id="rl-btn-again" class="btn btn-secondary">${t('reverseLookup.runAgain')}</button>
+          <button id="rl-btn-close" class="btn btn-secondary">${t('form.cancel')}</button>
+        </div>
       </div>`;
 
     document.getElementById('rl-btn-again').onclick = showSelection;
@@ -2575,9 +2785,11 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
     modal.innerHTML = `
       <h3 style="margin:0 0 12px 0; font-size:16px;">${t('reverseLookup.title')}</h3>
       <p style="color:#cc3340; font-size:13px; margin:0 0 16px 0;">${escapeHtml(err.message || String(err))}</p>
-      <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:16px; border-top:1px solid #e9ebed;">
-        <button id="rl-err-again" class="btn btn-secondary">${t('reverseLookup.runAgain')}</button>
-        <button id="rl-err-close" class="btn btn-secondary">${t('form.cancel')}</button>
+      <div class="modal-footer">
+        <div class="modal-footer-actions">
+          <button id="rl-err-again" class="btn btn-secondary">${t('reverseLookup.runAgain')}</button>
+          <button id="rl-err-close" class="btn btn-secondary">${t('form.cancel')}</button>
+        </div>
       </div>`;
     document.getElementById('rl-err-again').onclick = showSelection;
     document.getElementById('rl-err-close').onclick = () => {
@@ -2629,9 +2841,11 @@ function showReverseLookupModal() {
         <input type="checkbox" id="rl-include-names" checked>
         ${t('reverseLookup.includeNames')}
       </label>
-      <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:20px; padding-top:16px; border-top:1px solid #e9ebed;">
-        <button id="rl-btn-cancel" class="btn btn-secondary">${t('form.cancel')}</button>
-        <button id="rl-btn-run" class="btn">${t('reverseLookup.run')}</button>
+      <div class="modal-footer">
+        <div class="modal-footer-actions">
+          <button id="rl-btn-cancel" class="btn btn-secondary">${t('form.cancel')}</button>
+          <button id="rl-btn-run" class="btn">${t('reverseLookup.run')}</button>
+        </div>
       </div>`;
 
     // Show/hide and update the text-field performance warning whenever a text type checkbox
@@ -2747,10 +2961,6 @@ function buildAndDownloadCSV(allColumns) {
   }
 }
 
-function csvEscape(val) {
-  return `"${String(val).replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`;
-}
-
 // -------------------------------------------------------
 // FIND DUPLICATES
 // -------------------------------------------------------
@@ -2840,8 +3050,10 @@ function showFindDuplicatesModal() {
         <h3 style="margin:0 0 8px 0; font-size:16px;">${t('findDuplicates.title')}</h3>
         ${notice ? `<div style="padding:10px 14px; background:#edf7ed; border:1px solid #5c9e6e; border-radius:4px; margin-bottom:14px; font-size:13px; color:#1e5631; font-weight:600;">${notice}</div>` : ''}
         <p style="font-size:14px; color:#2f3941; margin:0;">${t('findDuplicates.noResults')}</p>
-        <div style="display:flex; justify-content:flex-end; padding-top:16px; border-top:1px solid #e9ebed; margin-top:16px;">
-          <button id="fd-close" class="btn btn-secondary">${t('form.cancel')}</button>
+        <div class="modal-footer">
+          <div class="modal-footer-actions">
+            <button id="fd-close" class="btn btn-secondary">${t('form.cancel')}</button>
+          </div>
         </div>`;
       document.getElementById('fd-close').onclick = () => { overlay.style.display = 'none'; };
       return;
@@ -2865,10 +3077,10 @@ function showFindDuplicatesModal() {
       <h3 style="margin:0 0 6px 0; font-size:16px;">${t('findDuplicates.title')}</h3>
       ${notice ? `<div style="padding:10px 14px; background:#edf7ed; border:1px solid #5c9e6e; border-radius:4px; margin-bottom:10px; font-size:13px; color:#1e5631; font-weight:600;">${notice}</div>` : ''}
       <p style="font-size:12px; color:#028484; margin:0 0 10px 0;">${t('findDuplicates.diffHint')}</p>
-      <div id="fd-groups-container" style="max-height:50vh; overflow-y:auto;">${exactSection}${similarSection}</div>
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; padding-top:14px; border-top:1px solid #e9ebed; margin-top:14px;">
-        <span id="fd-sel-count" style="font-size:13px; color:#68737d;">${t('findDuplicates.noneSelected')}</span>
-        <div style="display:flex; gap:8px;">
+      <div id="fd-groups-container">${exactSection}${similarSection}</div>
+      <div class="modal-footer">
+        <span id="fd-sel-count" style="font-size:13px; color:#68737d; min-width:0;">${t('findDuplicates.noneSelected')}</span>
+        <div class="modal-footer-actions">
           <button id="fd-close" class="btn btn-secondary">${t('form.cancel')}</button>
           <button id="fd-delete-btn" class="btn btn-danger" disabled>${t('findDuplicates.deleteSelected')}</button>
         </div>
@@ -2995,9 +3207,11 @@ function showFindDuplicatesModal() {
         </table>
       </div>
       <p style="font-size:12px; color:#68737d; margin:8px 0 0 0;">${t('findDuplicates.deleteWarning')}</p>
-      <div style="display:flex; justify-content:flex-end; gap:8px; padding-top:14px; border-top:1px solid #e9ebed; margin-top:14px;">
-        <button id="fd-back" class="btn btn-secondary">${t('form.cancel')}</button>
-        <button id="fd-confirm" class="btn btn-danger">${t('findDuplicates.confirmDeleteBtn', { n: results.length })}</button>
+      <div class="modal-footer">
+        <div class="modal-footer-actions">
+          <button id="fd-back" class="btn btn-secondary">${t('form.cancel')}</button>
+          <button id="fd-confirm" class="btn btn-danger">${t('findDuplicates.confirmDeleteBtn', { n: results.length })}</button>
+        </div>
       </div>`;
 
     document.getElementById('fd-back').onclick    = () => renderSelection(duplicates);
@@ -3020,7 +3234,7 @@ function showFindDuplicatesModal() {
     showProgress();
     for (const rec of toDelete) {
       try {
-        await client.request({ url: `/api/v2/custom_objects/${currentCoKey}/records/${rec.id}`, type: 'DELETE' });
+        await zafRequest({ url: `/api/v2/custom_objects/${currentCoKey}/records/${rec.id}`, type: 'DELETE' });
         tabulatorTable?.deleteRow(rec.id);
       } catch (e) {
         console.error(`Failed to delete record ${rec.id}`, e);
@@ -3048,14 +3262,16 @@ function showFindDuplicatesModal() {
 // ----------------------------------------------------
 
 async function fetchAllPages(initialEndpoint, dataKey, progressCallback) {
-  let allRecords = [];
+  const allRecords = [];
   let currentEndpoint = initialEndpoint;
+  let truncated = false;
+  let lastError = null;
 
   while (currentEndpoint) {
     try {
-      const response = await client.request(currentEndpoint);
+      const response = await zafRequest(currentEndpoint);
       if (response[dataKey]) {
-        allRecords = allRecords.concat(response[dataKey]);
+        for (const r of response[dataKey]) allRecords.push(r);
         if (progressCallback) {
           progressCallback(allRecords.length);
         }
@@ -3069,8 +3285,16 @@ async function fetchAllPages(initialEndpoint, dataKey, progressCallback) {
       }
     } catch (error) {
       console.error(`Error fetching paginated data from ${currentEndpoint}:`, error);
-      currentEndpoint = null; 
+      truncated = true;
+      lastError = error;
+      currentEndpoint = null;
     }
+  }
+  if (truncated) {
+    // Callers that care can inspect result.truncated / result.error; existing
+    // callers treat the array normally (partial data, same as before).
+    allRecords.truncated = true;
+    allRecords.error = lastError;
   }
   return allRecords;
 }
@@ -3099,7 +3323,7 @@ async function searchLookupData(targetType, query) {
   }
 
   try {
-    const response = await client.request(endpoint);
+    const response = await zafRequest(endpoint);
     const rawRecords = response[dataKey] || [];
     
     const filteredRecords = rawRecords.filter(record => {
@@ -3143,7 +3367,7 @@ async function fetchSingleRecordName(targetType, id) {
   }
 
   try {
-    const response = await client.request(endpoint);
+    const response = await zafRequest(endpoint);
     const record = response[dataKey];
     return record[labelField] || record.title || t('form.recordFallback', { id: record.id });
   } catch (e) {

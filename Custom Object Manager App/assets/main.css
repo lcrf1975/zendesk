@@ -67,13 +67,14 @@ input[type="checkbox"] {
 .btn {
   background-color: #1f73b7;
   color: white;
-  border: none;
-  padding: 8px 16px;
+  border: 1px solid transparent;
+  padding: 5px 12px;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
+  box-sizing: border-box;
 }
 
 .btn:hover {
@@ -93,7 +94,6 @@ input[type="checkbox"] {
 .btn-orange {
   background-color: #e07b00;
   color: white;
-  border: none;
 }
 
 .btn-orange:hover {
@@ -103,7 +103,6 @@ input[type="checkbox"] {
 .btn-purple {
   background-color: #7c3aed;
   color: white;
-  border: none;
 }
 
 .btn-purple:hover {
@@ -113,7 +112,6 @@ input[type="checkbox"] {
 .btn-teal {
   background-color: #028484;
   color: white;
-  border: none;
 }
 
 .btn-teal:hover {
@@ -137,8 +135,10 @@ input[type="checkbox"] {
   background: rgba(47, 57, 65, 0.6);
   z-index: 1000;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  padding: 24px 16px 32px;
+  box-sizing: border-box;
 }
 
 #find-duplicates-modal {
@@ -146,10 +146,40 @@ input[type="checkbox"] {
   border-radius: 8px;
   padding: 24px;
   max-width: 960px;
-  width: 95%;
-  max-height: 80vh;
-  overflow-y: auto;
+  width: 100%;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+#find-duplicates-modal #fd-groups-container {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+
+/* Shared modal footer — pinned, never crushed by flex content */
+.modal-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-top: 14px;
+  margin-top: 14px;
+  border-top: 1px solid #e9ebed;
+  width: 100%;
+  box-sizing: border-box;
+  gap: 8px;
+}
+
+.modal-footer-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .fd-record-link { color: #1f73b7; text-decoration: none; font-weight: 600; }
@@ -206,8 +236,10 @@ mark.fd-diff {
   background: rgba(47, 57, 65, 0.6);
   z-index: 1000;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  padding: 24px 16px 32px;
+  box-sizing: border-box;
 }
 
 #reverse-lookup-modal {
@@ -215,10 +247,19 @@ mark.fd-diff {
   border-radius: 8px;
   padding: 24px;
   max-width: 960px;
-  width: 90%;
-  max-height: 80vh;
-  overflow-y: auto;
+  width: 100%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+#reverse-lookup-modal #rl-results-container {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .rl-record-link { color: #1f73b7; text-decoration: none; font-weight: 600; }
@@ -249,25 +290,42 @@ mark.fd-diff {
   background-color: #cc3340;
   color: white;
   border: none;
-  padding: 6px 12px;
+  padding: 0;
+  width: 26px;
+  height: 26px;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .btn-danger:hover {
   background-color: #8c232c;
 }
 
+/* When .btn-danger is used as a full text button (not inline icon) */
+.btn.btn-danger {
+  width: auto;
+  height: auto;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+}
+
 .btn-edit {
   background-color: #038153;
   color: white;
   border: none;
-  padding: 6px 12px;
+  padding: 0;
+  width: 26px;
+  height: 26px;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 12px;
-  margin-right: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .btn-edit:hover {
@@ -279,9 +337,9 @@ mark.fd-diff {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  margin-bottom: 6px;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 6px;
 }
 
 .toolbar-title {
@@ -292,30 +350,30 @@ mark.fd-diff {
 
 .toolbar-title h3 {
   margin: 0;
-  font-size: 18px;
+  font-size: 15px;
   color: #1f73b7;
 }
 
 .toolbar-actions {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 4px;
   margin-left: auto;
 }
 
 .toolbar-controls {
   display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding-bottom: 16px;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
   border-bottom: 1px solid #e9ebed;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
+  margin-bottom: 8px;
 }
 
 .search-container {
   flex: 1;
   display: flex;
-  min-width: 250px;
+  min-width: 120px;
 }
 
 .search-input {
@@ -326,17 +384,21 @@ mark.fd-diff {
   display: flex;
   gap: 8px;
   align-items: center;
-  min-width: 350px;
-  flex: 1; 
+  flex-shrink: 0;
 }
 
 .column-controls .ts-wrapper {
-  flex: 1;
+  flex: 0 0 200px;
+}
+
+.column-controls .ts-wrapper .ts-control {
+  flex-wrap: nowrap;
+  cursor: pointer;
 }
 
 /* Record Summary Metadata */
 .record-summary {
-  font-size: 13px;
+  font-size: 11px;
   color: #68737d;
 }
 .record-summary strong {
@@ -395,6 +457,83 @@ mark.fd-diff {
   transition: width 0.25s ease;
 }
 
+/* Pagination bar — inline in the toolbar-controls row */
+#table-pagination-bar {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* Strip the default footer chrome Tabulator adds */
+#table-pagination-bar .tabulator-footer {
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+#table-pagination-bar .tabulator-footer-contents {
+  padding: 0;
+}
+
+#table-pagination-bar .tabulator-paginator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+
+/* Label wraps the select — hide its text while keeping the select visible and aligned */
+#table-pagination-bar .tabulator-paginator > label {
+  font-size: 0;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+}
+
+/* Rows-per-page select */
+#table-pagination-bar .tabulator-page-size {
+  font-size: 12px;
+  padding: 3px 4px;
+  border: 1px solid #d8dcde;
+  border-radius: 4px;
+  cursor: pointer;
+  height: 28px;
+  width: 52px;
+  margin-right: 8px;
+}
+
+/* Page navigation buttons */
+#table-pagination-bar .tabulator-page {
+  border: 1px solid #d8dcde;
+  background: white;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  color: #2f3941;
+  min-width: 32px;
+  height: 28px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+#table-pagination-bar .tabulator-page:hover:not([disabled]) {
+  background: #f8f9f9;
+  border-color: #1f73b7;
+  color: #1f73b7;
+}
+
+#table-pagination-bar .tabulator-page.active {
+  background: #1f73b7;
+  border-color: #1f73b7;
+  color: white;
+}
+
+#table-pagination-bar .tabulator-page[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* Tabulator overrides to match Zendesk */
 .tabulator {
   font-size: 13px;
@@ -402,6 +541,20 @@ mark.fd-diff {
 }
 .tabulator-col-title {
   font-weight: 600;
+  text-align: center;
+}
+.tabulator .tabulator-row {
+  min-height: unset;
+}
+.tabulator .tabulator-cell {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tabulator .tabulator-cell[tabulator-field="actions"] {
+  text-align: center;
+  overflow: visible;
+  white-space: normal;
 }
 
 /* When many columns are visible their combined minWidths can exceed the
@@ -613,13 +766,86 @@ mark.fd-diff {
   font-size: 14px;
 }
 
+/* Bulk Delete modal */
+#bulk-delete-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(47, 57, 65, 0.6);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#bulk-delete-modal {
+  background: white;
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 520px;
+  width: 92%;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+
+#bulk-delete-modal h3 {
+  font-size: 16px;
+  color: #2f3941;
+}
+
+.bulk-delete-preview {
+  list-style: none;
+  padding: 8px 12px;
+  margin: 8px 0 0 0;
+  border: 1px solid #e9ebed;
+  border-radius: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  font-size: 13px;
+  background: #f8f9f9;
+}
+
+.bulk-delete-preview li {
+  padding: 3px 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #2f3941;
+}
+
+/* Delete propagation checkbox */
+.delete-propagate-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 14px 0 4px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #2f3941;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.delete-propagate-label input[type="checkbox"] {
+  margin-top: 2px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.delete-propagate-hint {
+  font-size: 12px;
+  color: #68737d;
+  margin: 0 0 0 22px;
+  line-height: 1.4;
+}
+
 /* Advanced Filter Bar */
 #filter-bar {
   background: #f8f9f9;
   border: 1px solid #d8dcde;
   border-radius: 4px;
-  padding: 12px 16px;
-  margin-bottom: 16px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
 }
 
 .filter-bar-header {
@@ -627,11 +853,11 @@ mark.fd-diff {
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12px;
   color: #2f3941;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .filter-logic-toggle {
@@ -659,16 +885,16 @@ mark.fd-diff {
 }
 
 .filter-bar-hint {
-  font-size: 12px;
+  font-size: 11px;
   color: #68737d;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 
 .filter-row {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .filter-field {
@@ -692,9 +918,9 @@ mark.fd-diff {
   border: 1px solid #d8dcde;
   border-radius: 4px;
   cursor: pointer;
-  padding: 6px 10px;
+  padding: 3px 8px;
   color: #68737d;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1;
 }
 
@@ -708,8 +934,8 @@ mark.fd-diff {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 10px;
-  padding-top: 10px;
+  margin-top: 6px;
+  padding-top: 6px;
   border-top: 1px solid #e9ebed;
 }
 
@@ -775,5 +1001,73 @@ mark.fd-diff {
   padding-top: 16px;
   border-top: 1px solid #e9ebed;
   flex-wrap: wrap;
+}
+
+/* Toast Notifications */
+#toast-container {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 360px;
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #2f3941;
+  background: #fff;
+  border-left: 4px solid #68737d;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  animation: toast-slide-in 0.2s ease-out;
+}
+
+.toast-info    { border-left-color: #1f73b7; }
+.toast-success { border-left-color: #22874e; background: #edf7f1; }
+.toast-warning { border-left-color: #b46b00; background: #fff7ed; }
+.toast-error   { border-left-color: #cc3340; background: #fdecee; }
+
+.toast-fade-out {
+  animation: toast-fade-out 0.2s ease-in forwards;
+}
+
+@keyframes toast-slide-in {
+  from { transform: translateX(16px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+@keyframes toast-fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; transform: translateY(-4px); }
+}
+
+/* Skeleton loader rows (shown while the table data is being prepared) */
+.skeleton-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 0 6px;
+}
+
+.skeleton-row {
+  height: 14px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #eef0f2 0%, #f8f9fa 50%, #eef0f2 100%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s infinite linear;
+}
+
+@keyframes skeleton-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
 }
 
