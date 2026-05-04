@@ -22,6 +22,9 @@ jobs:
           - language: python
             build-mode: none
             runner: ubuntu-latest
+          - language: javascript-typescript
+            build-mode: none
+            runner: ubuntu-latest
           - language: actions
             build-mode: none
             runner: ubuntu-latest
