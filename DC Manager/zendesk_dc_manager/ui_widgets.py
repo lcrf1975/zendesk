@@ -22,8 +22,9 @@ from PyQt6.QtWidgets import (
     QPushButton, QProgressBar, QTableView,
     QHeaderView, QAbstractItemView, QTextEdit,
     QStyledItemDelegate, QStyleOptionViewItem, QStyle,
+    QLineEdit, QMenu, QApplication,
 )
-from PyQt6.QtGui import QBrush, QFontMetrics
+from PyQt6.QtGui import QBrush, QFontMetrics, QAction
 
 from zendesk_dc_manager.config import (
     UI_CONFIG,
@@ -494,6 +495,40 @@ class _CellColorDelegate(QStyledItemDelegate):
 
         painter.restore()
 
+    def createEditor(self, parent, option, index):
+        col = index.column()
+        # Checkbox column: no editor
+        if col == 0:
+            return None
+        editable = bool(index.flags() & Qt.ItemFlag.ItemIsEditable)
+        editor = QLineEdit(parent)
+        editor.setFrame(False)
+        if editable:
+            editor.setStyleSheet(
+                "QLineEdit { background: #FFFBEB; border: 2px solid #F59E0B; "
+                "padding: 2px 6px; font-size: 12px; }"
+            )
+        else:
+            editor.setReadOnly(True)
+            editor.setStyleSheet(
+                "QLineEdit { background: transparent; border: 1px solid #D1D5DB; "
+                "padding: 2px 6px; font-size: 12px; color: inherit; }"
+            )
+        return editor
+
+    def setEditorData(self, editor, index):
+        value = index.data(Qt.ItemDataRole.DisplayRole) or ''
+        editor.setText(value)
+        editor.selectAll()
+
+    def setModelData(self, editor, model, index):
+        if editor.isReadOnly():
+            return
+        model.setData(index, editor.text(), Qt.ItemDataRole.EditRole)
+
+    def updateEditorGeometry(self, editor, option, index):
+        editor.setGeometry(option.rect)
+
 
 # ==============================================================================
 # WORK ITEM TABLE MODEL
@@ -622,6 +657,9 @@ class WorkItemTableModel(QAbstractTableModel):
 
         if role == Qt.ItemDataRole.DisplayRole:
             return self._display(col, item, is_system)
+
+        if role == Qt.ItemDataRole.EditRole and col in self._FIELD_KEY:
+            return item.get(self._FIELD_KEY[col], '') or ''
 
         if role == Qt.ItemDataRole.CheckStateRole and col == self.COL_SELECT:
             checked = self._selection.get(row, False)
@@ -858,6 +896,23 @@ class PreviewTableWidget(QTableView):
         self.verticalHeader().setDefaultSectionSize(UI_CONFIG.TABLE_ROW_HEIGHT)
         self.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
         self.setItemDelegate(_CellColorDelegate(self))
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_context_menu)
+
+    # ------------------------------------------------------------------
+    # Context menu
+    # ------------------------------------------------------------------
+
+    def _on_context_menu(self, pos):
+        index = self.indexAt(pos)
+        if not index.isValid():
+            return
+        text = index.data(Qt.ItemDataRole.DisplayRole) or ''
+        menu = QMenu(self)
+        copy_action = QAction("Copiar conteúdo da célula", self)
+        copy_action.triggered.connect(lambda: QApplication.clipboard().setText(text))
+        menu.addAction(copy_action)
+        menu.exec(self.viewport().mapToGlobal(pos))
 
     # ------------------------------------------------------------------
     # Compatibility shim: expose _data so ui_main.py can do len(table._data)

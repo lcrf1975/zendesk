@@ -1,6 +1,8 @@
 """
 Translation service module for Zendesk DC Manager.
-Handles translation via Google Translate (free web API or Cloud API).
+Handles translation via DeepL, Google Cloud, or Google Web (free, unofficial).
+
+Provider priority: DeepL (if deepl_api_key) > Google Cloud (if google_api_key) > Google Web.
 
 This module uses:
 - PersistentCache from cache.py for SQLite-based caching
@@ -25,23 +27,37 @@ from zendesk_dc_manager.types import TranslationStats
 
 
 class TranslationService:
-    """Translation service using Google Translate."""
+    """Translation service. Provider priority: DeepL > Google Cloud > Google Web."""
 
-    # Google Translate free web API endpoint
     GOOGLE_WEB_URL = "https://translate.googleapis.com/translate_a/single"
-
-    # Google Cloud Translation API endpoint
     GOOGLE_CLOUD_URL = "https://translation.googleapis.com/language/translate/v2"
+    DEEPL_FREE_URL = "https://api-free.deepl.com/v2/translate"
+    DEEPL_PRO_URL = "https://api.deepl.com/v2/translate"
+
+    # DeepL language codes differ from Google's for some languages
+    _DEEPL_LANG_MAP = {
+        'pt': 'PT',
+        'en': 'EN-US',
+        'es': 'ES',
+    }
 
     def __init__(
         self,
         use_google_cloud: bool = False,
         google_api_key: Optional[str] = None,
+        deepl_api_key: Optional[str] = None,
         protect_acronyms: bool = True,
         cache_expiry_days: int = 30,
         cache_file: Optional[str] = None
     ):
-        self.use_google_cloud = use_google_cloud and google_api_key
+        self.deepl_api_key = deepl_api_key or None
+        # DeepL free keys end with ':fx'
+        self._deepl_url = (
+            self.DEEPL_FREE_URL
+            if (self.deepl_api_key and self.deepl_api_key.endswith(':fx'))
+            else self.DEEPL_PRO_URL
+        )
+        self.use_google_cloud = (not self.deepl_api_key) and use_google_cloud and google_api_key
         self.google_api_key = google_api_key
         self.protect_acronyms = protect_acronyms
         self.cache_expiry_days = cache_expiry_days
@@ -84,17 +100,18 @@ class TranslationService:
         text: str,
         source_lang: str,
         target_lang: str
-    ) -> Tuple[Optional[str], bool]:
+    ) -> Tuple[Optional[str], bool, bool]:
         """
         Translate text from source language to target language.
 
         Returns:
-            Tuple of (translated_text, from_cache)
+            Tuple of (translated_text, from_cache, needs_attention)
             - translated_text: The translated text or None if failed
             - from_cache: True if result came from cache
+            - needs_attention: True if acronym(s) were lost — human review needed
         """
         if not text or not text.strip():
-            return text, False
+            return text, False, False
 
         text = text.strip()
 
@@ -103,11 +120,11 @@ class TranslationService:
         if cache_result:
             cached_text, age_days = cache_result
             if age_days <= self.cache_expiry_days:
-                return cached_text, True
+                return cached_text, True, False
 
         # Check if text needs translation
         if not self._needs_translation(text):
-            return text, False
+            return text, False, False
 
         # Protect acronyms if enabled
         protected_text = text
@@ -121,11 +138,15 @@ class TranslationService:
 
         # If text should be skipped (e.g., pure acronym)
         if skip_translation and "__SKIP__" in acronym_map:
-            return acronym_map["__SKIP__"], False
+            return acronym_map["__SKIP__"], False, False
 
         # Perform translation
         try:
-            if self.use_google_cloud:
+            if self.deepl_api_key:
+                translated = self._translate_deepl(
+                    protected_text, source_lang, target_lang
+                )
+            elif self.use_google_cloud:
                 translated = self._translate_google_cloud(
                     protected_text, source_lang, target_lang
                 )
@@ -135,28 +156,24 @@ class TranslationService:
                 )
 
             if translated:
-                # Restore acronyms
+                needs_attention = False
                 if acronym_map:
-                    translated = AcronymProtector.restore(translated, acronym_map)
-
-                    # Verify and fix any issues
-                    translated, issues = AcronymProtector.verify_and_fix(
+                    translated, placeholder_lost = AcronymProtector.restore(
+                        translated, acronym_map
+                    )
+                    translated, acronym_missing = AcronymProtector.verify_and_fix(
                         text, translated, acronym_map
                     )
-                    if issues:
-                        for issue in issues:
-                            logger.debug(f"Translation fix: {issue}")
+                    needs_attention = placeholder_lost or acronym_missing
 
-                # Cache the result
                 self.cache.set(text, target_lang, translated)
+                return translated, False, needs_attention
 
-                return translated, False
-
-            return None, False
+            return None, False, False
 
         except Exception as e:
             logger.error(f"Translation error: {e}")
-            return None, False
+            return None, False, False
 
     def _needs_translation(self, text: str) -> bool:
         """Check if text actually needs translation."""
@@ -189,6 +206,46 @@ class TranslationService:
                 return False
 
         return True
+
+    def _translate_deepl(
+        self,
+        text: str,
+        source_lang: str,
+        target_lang: str
+    ) -> Optional[str]:
+        """Translate using DeepL API (free or pro)."""
+        self._rate_limit()
+
+        src = self._DEEPL_LANG_MAP.get(source_lang, source_lang.upper())
+        tgt = self._DEEPL_LANG_MAP.get(target_lang, target_lang.upper())
+
+        headers = {
+            'Authorization': f'DeepL-Auth-Key {self.deepl_api_key}',
+            'Content-Type': 'application/json',
+        }
+        data = {
+            'text': [text],
+            'source_lang': src,
+            'target_lang': tgt,
+            'tag_handling': 'text',
+        }
+
+        try:
+            response = self.session.post(
+                self._deepl_url,
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+            response.raise_for_status()
+            result = response.json()
+            translations = result.get('translations', [])
+            if translations:
+                return translations[0].get('text')
+            return None
+        except Exception as e:
+            logger.error(f"DeepL translation failed: {e}")
+            return None
 
     def _translate_google_web(
         self,

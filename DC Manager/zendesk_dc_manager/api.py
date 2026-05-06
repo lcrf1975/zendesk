@@ -428,13 +428,16 @@ class ZendeskAPI:
         options = field.get('custom_field_options', [])
         if not options:
             raise Exception(f"Ticket field {field_id} has no options")
-        updated = [
-            {
-                'name': updates.get(opt.get('value'), opt.get('raw_name', opt.get('name', ''))),
-                'value': opt.get('value'),
-            }
-            for opt in options
-        ]
+        updated = []
+        for opt in options:
+            opt_value = opt.get('value')
+            if self._should_stop():
+                raise Exception("Operation canceled")
+            fallback = opt.get('raw_name') or opt.get('name') or ''
+            updated.append({
+                'name': updates.get(opt_value, fallback),
+                'value': opt_value,
+            })
         self.update_ticket_field(field_id, {'custom_field_options': updated})
 
     # =========================================================================
@@ -568,13 +571,16 @@ class ZendeskAPI:
         options = field.get('custom_field_options', [])
         if not options:
             raise Exception(f"User field {field_id} has no options")
-        updated = [
-            {
-                'name': updates.get(opt.get('value'), opt.get('raw_name', opt.get('name', ''))),
-                'value': opt.get('value'),
-            }
-            for opt in options
-        ]
+        updated = []
+        for opt in options:
+            opt_value = opt.get('value')
+            if self._should_stop():
+                raise Exception("Operation canceled")
+            fallback = opt.get('raw_name') or opt.get('name') or ''
+            updated.append({
+                'name': updates.get(opt_value, fallback),
+                'value': opt_value,
+            })
         self.update_user_field(field_id, {'custom_field_options': updated})
 
     # =========================================================================
@@ -672,13 +678,16 @@ class ZendeskAPI:
         options = field.get('custom_field_options', [])
         if not options:
             raise Exception(f"Organization field {field_id} has no options")
-        updated = [
-            {
-                'name': updates.get(opt.get('value'), opt.get('raw_name', opt.get('name', ''))),
-                'value': opt.get('value'),
-            }
-            for opt in options
-        ]
+        updated = []
+        for opt in options:
+            opt_value = opt.get('value')
+            if self._should_stop():
+                raise Exception("Operation canceled")
+            fallback = opt.get('raw_name') or opt.get('name') or ''
+            updated.append({
+                'name': updates.get(opt_value, fallback),
+                'value': opt_value,
+            })
         self.update_organization_field(field_id, {'custom_field_options': updated})
 
     # =========================================================================

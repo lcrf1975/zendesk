@@ -1001,6 +1001,16 @@ class ZendeskWizard(QMainWindow):
         )
         page.add_widget(info_label)
 
+        summary_group = QGroupBox("What will be executed")
+        summary_layout = QVBoxLayout(summary_group)
+        summary_layout.setContentsMargins(12, 8, 12, 12)
+        summary_layout.setSpacing(4)
+        self.lbl_apply_summary = QLabel("Select items in the Preview tab to see a summary.")
+        self.lbl_apply_summary.setWordWrap(True)
+        self.lbl_apply_summary.setStyleSheet("font-size: 12px; color: #374151;")
+        summary_layout.addWidget(self.lbl_apply_summary)
+        page.add_widget(summary_group)
+
         options_group = QGroupBox("Apply Options")
         options_layout = QVBoxLayout(options_group)
         options_layout.setContentsMargins(12, 8, 12, 12)
@@ -1014,6 +1024,7 @@ class ZendeskWizard(QMainWindow):
             "will have their DC translations updated with the current values.\n"
             "\nWhen unchecked, linked items will be skipped."
         )
+        self.chk_update_existing_dc.stateChanged.connect(self._update_apply_summary)
         options_layout.addWidget(self.chk_update_existing_dc)
 
         page.add_widget(options_group)
@@ -1126,15 +1137,17 @@ class ZendeskWizard(QMainWindow):
         self.cmb_provider = QComboBox()
         self.cmb_provider.addItems([
             "Google Web (Free)",
-            "Google Cloud (API Key)"
+            "Google Cloud (API Key)",
+            "DeepL (API Key)",
         ])
+        self.cmb_provider.currentTextChanged.connect(self._on_provider_changed)
         trans_layout.addWidget(self.cmb_provider, 0, 1)
 
         trans_layout.addWidget(QLabel("API Key:"), 1, 0)
         api_key_row = QHBoxLayout()
         api_key_row.setSpacing(8)
         self.txt_api_key = QLineEdit()
-        self.txt_api_key.setPlaceholderText("Required for Google Cloud only")
+        self.txt_api_key.setPlaceholderText("Required for Google Cloud or DeepL")
         self.txt_api_key.setEchoMode(QLineEdit.EchoMode.Password)
         api_key_row.addWidget(self.txt_api_key)
         self.btn_toggle_api_key = QPushButton("Show")
@@ -1207,6 +1220,18 @@ class ZendeskWizard(QMainWindow):
             self.txt_api_key.setEchoMode(QLineEdit.EchoMode.Password)
             self.btn_toggle_api_key.setText("Show")
 
+    def _on_provider_changed(self, text: str):
+        needs_key = "Google Web" not in text
+        self.txt_api_key.setEnabled(needs_key)
+        if "DeepL" in text:
+            self.txt_api_key.setPlaceholderText(
+                "DeepL API key (ends with :fx for free tier)"
+            )
+        elif "Cloud" in text:
+            self.txt_api_key.setPlaceholderText("Google Cloud Translation API key")
+        else:
+            self.txt_api_key.setPlaceholderText("Required for Google Cloud or DeepL")
+
     def _browse_backup(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Backup Folder")
         if folder:
@@ -1229,24 +1254,43 @@ class ZendeskWizard(QMainWindow):
             self.txt_email.setText(data.get('email', ''))
             self.txt_token.setText(data.get('token', ''))
             self.txt_backup.setText(data.get('backup_path', ''))
-            self.txt_api_key.setText(data.get('google_api_key', ''))
+            deepl_key = data.get('deepl_api_key', '')
+            google_key = data.get('google_api_key', '')
+            if deepl_key:
+                idx = self.cmb_provider.findText("DeepL (API Key)")
+                self.cmb_provider.setCurrentIndex(idx)
+                self.txt_api_key.setText(deepl_key)
+            else:
+                self.txt_api_key.setText(google_key)
             self.chk_protect_acronyms.setChecked(
                 data.get('protect_acronyms', True)
             )
             self.spn_cache_days.setValue(data.get('cache_expiry_days', 30))
+
+    def _api_keys_for_save(self):
+        """Return (google_api_key, deepl_api_key) based on selected provider."""
+        provider = self.cmb_provider.currentText()
+        key = self.txt_api_key.text()
+        if "DeepL" in provider:
+            return "", key
+        elif "Cloud" in provider:
+            return key, ""
+        return "", ""
 
     def _save_profile(self):
         filepath, _ = QFileDialog.getSaveFileName(
             self, "Save Profile", "", "JSON Files (*.json)"
         )
         if filepath:
+            google_key, deepl_key = self._api_keys_for_save()
             success = self.controller.save_profile(
                 filepath,
                 self.txt_subdomain.text(),
                 self.txt_email.text(),
                 self.txt_token.text(),
                 self.txt_backup.text(),
-                self.txt_api_key.text(),
+                google_key,
+                deepl_key,
                 self.chk_protect_acronyms.isChecked(),
                 self.spn_cache_days.value()
             )
@@ -1266,7 +1310,14 @@ class ZendeskWizard(QMainWindow):
                 self.txt_email.setText(data.get('email', ''))
                 self.txt_token.setText(data.get('token', ''))
                 self.txt_backup.setText(data.get('backup_path', ''))
-                self.txt_api_key.setText(data.get('google_api_key', ''))
+                deepl_key = data.get('deepl_api_key', '')
+                google_key = data.get('google_api_key', '')
+                if deepl_key:
+                    idx = self.cmb_provider.findText("DeepL (API Key)")
+                    self.cmb_provider.setCurrentIndex(idx)
+                    self.txt_api_key.setText(deepl_key)
+                else:
+                    self.txt_api_key.setText(google_key)
                 self.chk_protect_acronyms.setChecked(
                     data.get('protect_acronyms', True)
                 )
@@ -1280,6 +1331,7 @@ class ZendeskWizard(QMainWindow):
     def goto(self, index: int):
         if index == 3:
             self._log_apply_summary()
+            self._update_apply_summary()
         self.stack.setCurrentIndex(index)
         self.sidebar.select(index)
 
@@ -1346,6 +1398,7 @@ class ZendeskWizard(QMainWindow):
     def _on_selection_changed(self, count: int):
         self.lbl_sum_selected.setText(f"Selected: {count}")
         self._update_will_translate_label()
+        self._update_apply_summary()
 
     def _on_table_loading_finished(self):
         self.apply_table_filter()
@@ -1435,6 +1488,78 @@ class ZendeskWizard(QMainWindow):
         self.lbl_will_translate.setText(msg)
         self.lbl_will_translate.setStyleSheet(style)
 
+    def _update_apply_summary(self):
+        if not hasattr(self, 'lbl_apply_summary'):
+            return
+        if not hasattr(self, 'preview_table') or not self.preview_table:
+            return
+
+        selected_rows = self.preview_table.get_selected_rows()
+        items = [
+            self._work_items_cache[r]
+            for r in selected_rows
+            if r < len(self._work_items_cache)
+        ]
+        non_system = [i for i in items if not i.get('is_system', False)]
+
+        if not non_system:
+            self.lbl_apply_summary.setText("No items selected.")
+            return
+
+        force_update = self.chk_update_existing_dc.isChecked()
+
+        create_count = 0
+        link_count = 0
+        update_count = 0
+        skip_count = 0
+        attention_count = 0
+        no_translation = 0
+
+        for item in non_system:
+            action = item.get('action', 'CREATE')
+            already_linked = item.get('already_linked', False)
+            en_source = item.get('en_source', SOURCE_NEW)
+            es_source = item.get('es_source', SOURCE_NEW)
+
+            if en_source == SOURCE_ATTENTION or es_source == SOURCE_ATTENTION:
+                attention_count += 1
+
+            if not item.get('en') or not item.get('es'):
+                no_translation += 1
+
+            if already_linked and not force_update:
+                skip_count += 1
+            elif action == 'CREATE':
+                create_count += 1
+            elif action == 'LINK':
+                if already_linked and force_update:
+                    update_count += 1
+                else:
+                    link_count += 1
+
+        lines = []
+        total = len(non_system)
+        lines.append(f"<b>{total} item(s) selected</b>")
+        if create_count:
+            lines.append(f"  • Create new DC: <b>{create_count}</b>")
+        if link_count:
+            lines.append(f"  • Link to existing DC: <b>{link_count}</b>")
+        if update_count:
+            lines.append(f"  • Update existing DC: <b>{update_count}</b>")
+        if skip_count:
+            lines.append(f"  • Skip (already linked): <b>{skip_count}</b>")
+        if no_translation:
+            lines.append(
+                f"  • ⚠️ Missing translation: <b>{no_translation}</b> "
+                f"(will be applied without EN/ES)"
+            )
+        if attention_count:
+            lines.append(
+                f"  • ⚠️ Needs attention (acronym check): <b>{attention_count}</b>"
+            )
+
+        self.lbl_apply_summary.setText("<br>".join(lines))
+
     def run_connect(self):
         backup = self.txt_backup.text().strip()
 
@@ -1450,9 +1575,11 @@ class ZendeskWizard(QMainWindow):
             return
 
         if self.chk_save_credentials.isChecked():
+            google_key, deepl_key = self._api_keys_for_save()
             self.controller.save_profile(
                 CREDENTIALS_FILE, subdomain, email, token, backup,
-                self.txt_api_key.text(),
+                google_key,
+                deepl_key,
                 self.chk_protect_acronyms.isChecked(),
                 self.spn_cache_days.value()
             )
@@ -1941,7 +2068,9 @@ class ZendeskWizard(QMainWindow):
 
         self.status_bar.finish("Backup Loaded", True)
 
-        items: List[Dict[str, Any]] = result  # type: ignore[assignment]
+        backup_data: Dict[str, Any] = result  # type: ignore[assignment]
+        timestamp = backup_data.get('timestamp', '')
+        items: List[Dict[str, Any]] = backup_data.get('items', [])
         self._pending_backup_items = items
 
         type_counts: Dict[str, int] = {}
@@ -1956,11 +2085,31 @@ class ZendeskWizard(QMainWindow):
             self.log_msg(f"  {t}: {count}")
         self.log_msg("=" * 50)
 
-        info_text = f"Loaded {len(items)} items:\n\n"
-        for t, count in sorted(type_counts.items()):
-            info_text += f"  {t}: {count}\n"
-        self.rollback_info.setText(info_text)
+        # Format timestamp for display (YYYYMMDD_HHMMSS → YYYY-MM-DD HH:MM:SS)
+        ts_display = timestamp
+        if len(timestamp) == 15 and '_' in timestamp:
+            d, t_ = timestamp.split('_')
+            ts_display = f"{d[:4]}-{d[4:6]}-{d[6:]} {t_[:2]}:{t_[2:4]}:{t_[4:]}"
 
+        lines = [f"Backup: {ts_display}" if ts_display else "Backup loaded"]
+        lines.append(f"Total items: {len(items)}\n")
+        for t, count in sorted(type_counts.items()):
+            lines.append(f"  {t}: {count}")
+
+        # Show up to 20 field names as sample
+        field_names = []
+        for item in items[:20]:
+            fn = item.get('field_name') or item.get('current_value', '')
+            if fn and fn not in field_names:
+                field_names.append(fn)
+        if field_names:
+            lines.append("\nSample fields to restore:")
+            for fn in field_names[:10]:
+                lines.append(f"  • {fn}")
+            if len(items) > 20:
+                lines.append(f"  … and {len(items) - 20} more")
+
+        self.rollback_info.setText("\n".join(lines))
         self.btn_rollback.setEnabled(True)
 
     def run_rollback(self):

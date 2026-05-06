@@ -154,12 +154,26 @@ class PersistentCache:
                             original TEXT,
                             target_lang TEXT,
                             translated_text TEXT,
-                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         )
                     """)
+                    # Migrate existing DBs that lack accessed_at
+                    cursor.execute("PRAGMA table_info(translations)")
+                    columns = {row[1] for row in cursor.fetchall()}
+                    if 'accessed_at' not in columns:
+                        cursor.execute(
+                            "ALTER TABLE translations "
+                            "ADD COLUMN accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+                        )
+                        # Seed accessed_at = created_at for existing rows
+                        cursor.execute(
+                            "UPDATE translations SET accessed_at = created_at "
+                            "WHERE accessed_at IS NULL"
+                        )
                     cursor.execute("""
-                        CREATE INDEX IF NOT EXISTS idx_translations_created
-                        ON translations(created_at)
+                        CREATE INDEX IF NOT EXISTS idx_translations_accessed
+                        ON translations(accessed_at)
                     """)
                     conn.commit()
                     self._initialized = True
@@ -172,7 +186,7 @@ class PersistentCache:
         return hashlib.sha256(content.encode('utf-8')).hexdigest()
 
     def get_with_age(self, text: str, lang: str) -> Optional[Tuple[str, int]]:
-        """Get cached translation with age information."""
+        """Get cached translation with age in days since last access."""
         if not text or not lang:
             return None
 
@@ -182,24 +196,33 @@ class PersistentCache:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT translated_text, created_at FROM translations "
+                    "SELECT translated_text, accessed_at FROM translations "
                     "WHERE id = ?",
                     (key,)
                 )
                 result = cursor.fetchone()
 
                 if result:
-                    trans_text, created_at_str = result
+                    trans_text, accessed_at_str = result
                     try:
-                        created_dt = datetime.strptime(
-                            created_at_str, "%Y-%m-%d %H:%M:%S"
+                        accessed_dt = datetime.strptime(
+                            accessed_at_str, "%Y-%m-%d %H:%M:%S"
                         )
-                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                        accessed_dt = accessed_dt.replace(tzinfo=timezone.utc)
                         now_utc = datetime.now(timezone.utc)
-                        delta = now_utc - created_dt
+                        delta = now_utc - accessed_dt
                         age = max(0, delta.days)
                     except Exception:
                         age = 0
+
+                    # Touch accessed_at on cache hit
+                    cursor.execute(
+                        "UPDATE translations SET accessed_at = CURRENT_TIMESTAMP "
+                        "WHERE id = ?",
+                        (key,)
+                    )
+                    conn.commit()
+
                     return trans_text, age
                 return None
         except Exception as e:
@@ -223,8 +246,8 @@ class PersistentCache:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT OR REPLACE INTO translations
-                    (id, original, target_lang, translated_text, created_at)
-                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    (id, original, target_lang, translated_text, created_at, accessed_at)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """, (key, text, lang, translation))
                 conn.commit()
                 return True
@@ -284,14 +307,14 @@ class PersistentCache:
                 count = cursor.fetchone()[0]
 
                 cursor.execute(
-                    "SELECT MIN(created_at), MAX(created_at) FROM translations"
+                    "SELECT MIN(accessed_at), MAX(accessed_at) FROM translations"
                 )
                 oldest, newest = cursor.fetchone()
 
                 return {
                     'entries': count,
-                    'oldest': oldest,
-                    'newest': newest,
+                    'oldest_access': oldest,
+                    'newest_access': newest,
                     'db_path': self.db_path,
                 }
         except Exception as e:

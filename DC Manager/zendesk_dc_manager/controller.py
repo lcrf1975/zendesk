@@ -83,6 +83,8 @@ def generate_dc_name(text: str, max_length: int = 50) -> str:
     Generate a valid DC name from text.
     Converts to lowercase, removes accents, replaces spaces with underscores.
     Returns empty string if text is already a DC placeholder.
+    When truncation occurs, appends a 4-char hash suffix to avoid silent
+    collisions between long names that share the same prefix.
     """
     if not text:
         return ""
@@ -98,7 +100,9 @@ def generate_dc_name(text: str, max_length: int = 50) -> str:
     cleaned = _RE_MULTI_UNDERSCORE.sub('_', cleaned)
 
     if len(cleaned) > max_length:
-        cleaned = cleaned[:max_length].rstrip('_')
+        import hashlib
+        suffix = hashlib.md5(cleaned.encode()).hexdigest()[:4]
+        cleaned = cleaned[:max_length - 5].rstrip('_') + '_' + suffix
 
     return cleaned
 
@@ -247,8 +251,10 @@ class ZendeskController:
         cache_days: int
     ):
         """Configure translation service."""
-        use_google_cloud = "Cloud" in provider
+        use_deepl = "DeepL" in provider
+        use_google_cloud = (not use_deepl) and "Cloud" in provider
         self.translator = TranslationService(
+            deepl_api_key=api_key if use_deepl else None,
             use_google_cloud=use_google_cloud,
             google_api_key=api_key if use_google_cloud else None,
             protect_acronyms=protect_acronyms,
@@ -1148,8 +1154,22 @@ class ZendeskController:
             )
 
         else:
-            # Field is not linked to DC yet - check if a matching DC exists
-            existing_dc = self._find_dc_by_name(current_value)
+            # Field is not linked to DC yet — build the canonical lookup name
+            # using the same prefix logic as _apply_single_item so scan and
+            # apply always agree on which DC belongs to this item.
+            if '_option' in obj_type:
+                _parent_name = (extra or {}).get('parent_name', '')
+                _parent_dc = generate_dc_name(_parent_name) if _parent_name else ''
+                _option_dc = generate_dc_name(current_value)
+                _lookup_name = (
+                    f"{_parent_dc}_{_option_dc}"
+                    if (_parent_dc and _option_dc)
+                    else current_value
+                )
+            else:
+                _lookup_name = current_value
+
+            existing_dc = self._find_dc_by_name(_lookup_name)
             if existing_dc:
                 action = 'LINK'
                 dc_id = existing_dc.get('id')
@@ -1169,14 +1189,10 @@ class ZendeskController:
                 if self.es_locale_id in variants:
                     es_text = variants[self.es_locale_id].get('content', '')
             else:
-                # For field options, use parent-prefixed DC name so the
-                # preview shows the same placeholder that will be created.
+                # Propose the placeholder that will be created on apply
                 if '_option' in obj_type:
-                    parent_name = (extra or {}).get('parent_name', '')
-                    parent_dc = generate_dc_name(parent_name) if parent_name else ''
-                    option_dc = generate_dc_name(current_value)
-                    if parent_dc and option_dc:
-                        dc_placeholder = f"{{{{dc.{parent_dc}_{option_dc}}}}}"
+                    if _parent_dc and _option_dc:
+                        dc_placeholder = f"{{{{dc.{_parent_dc}_{_option_dc}}}}}"
                     else:
                         dc_placeholder = generate_dc_placeholder(current_value)
                 else:
@@ -1213,7 +1229,15 @@ class ZendeskController:
         }
 
         if extra:
-            item.update(extra)
+            _protected = {
+                'type', 'obj_id', 'field_name', 'current_value', 'raw_value',
+                'pt', 'en', 'es', 'action', 'dc_placeholder', 'dc_id',
+                'is_system', 'parent_id', 'source', 'pt_source',
+                'en_source', 'es_source', 'already_linked',
+            }
+            for k, v in extra.items():
+                if k not in _protected:
+                    item[k] = v
 
         self.work_items.append(item)
 
@@ -1273,12 +1297,12 @@ class ZendeskController:
 
             try:
                 if needs_en:
-                    en_result, en_from_cache = self.translator.translate(
+                    en_result, en_from_cache, en_attention = self.translator.translate(
                         pt_text, 'pt', 'en'
                     )
                     if en_result:
                         self.work_items[idx]['en'] = en_result
-                        if en_result.strip().lower() == pt_text.strip().lower():
+                        if en_attention or en_result.strip().lower() == pt_text.strip().lower():
                             self.work_items[idx]['en_source'] = SOURCE_ATTENTION
                         elif en_from_cache:
                             self.work_items[idx]['en_source'] = SOURCE_CACHE
@@ -1291,12 +1315,12 @@ class ZendeskController:
                         stats.failed += 1
 
                 if needs_es:
-                    es_result, es_from_cache = self.translator.translate(
+                    es_result, es_from_cache, es_attention = self.translator.translate(
                         pt_text, 'pt', 'es'
                     )
                     if es_result:
                         self.work_items[idx]['es'] = es_result
-                        if es_result.strip().lower() == pt_text.strip().lower():
+                        if es_attention or es_result.strip().lower() == pt_text.strip().lower():
                             self.work_items[idx]['es_source'] = SOURCE_ATTENTION
                         elif es_from_cache:
                             self.work_items[idx]['es_source'] = SOURCE_CACHE
@@ -1513,11 +1537,14 @@ class ZendeskController:
                 log_signal.emit(
                     f"  Error batching options for {field_type} {parent_id}: {e}"
                 )
-                # Move prematurely-counted successes to failed
-                for failed_item in queued_items:
-                    if failed_item in result['success']:
-                        result['success'].remove(failed_item)
-                    result['failed'].append(failed_item)
+                # Move prematurely-counted successes to failed.
+                # Use identity set to avoid O(n²) list.remove() and handle
+                # items not found in success (DC created but link failed).
+                queued_ids = {id(i) for i in queued_items}
+                result['success'] = [
+                    i for i in result['success'] if id(i) not in queued_ids
+                ]
+                result['failed'].extend(queued_items)
 
     def _refresh_dc_cache(self):
         """Refresh the DC cache from Zendesk."""
@@ -1567,8 +1594,9 @@ class ZendeskController:
         parent_id = item.get('parent_id')
         option_value = item.get('option_value', '')
 
+        _log_value = raw_value if is_dc_placeholder(raw_value) else current_value
         log_signal.emit(
-            f"  Processing {obj_type} {obj_id}: {current_value[:50]}..."
+            f"  Processing {obj_type} {obj_id}: {_log_value[:80]}..."
         )
 
         # Debug logging for options
@@ -1623,8 +1651,30 @@ class ZendeskController:
                 log_signal.emit("    Cannot generate DC name (skipped)")
                 return False, True, "Cannot generate DC name"
 
-            # Check if DC with this name already exists
+            # Check if DC with this name already exists.
+            # If the found DC belongs to a different object type (name collision
+            # between ticket_field and user_field etc.), disambiguate by
+            # prefixing with a short type token before creating a new one.
             existing_dc = self._find_dc_by_name(safe_dc_name)
+            if existing_dc and not '_option' in obj_type:
+                existing_pt = (
+                    (existing_dc.get('variants') or {})
+                    .get(self.pt_locale_id, {})
+                    .get('content', '')
+                )
+                if existing_pt and existing_pt.strip() != pt_text.strip():
+                    type_prefix = {
+                        'ticket_field': 'tf',
+                        'user_field': 'uf',
+                        'organization_field': 'of',
+                        'ticket_form': 'frm',
+                        'macro': 'mac',
+                        'view': 'vw',
+                        'trigger': 'trg',
+                        'automation': 'aut',
+                    }.get(obj_type, obj_type[:3])
+                    safe_dc_name = f"{type_prefix}_{safe_dc_name}"
+                    existing_dc = self._find_dc_by_name(safe_dc_name)
 
             placeholder = None
             dc_id = None
@@ -1687,7 +1737,7 @@ class ZendeskController:
 
                     if '422' in error_str:
                         self._refresh_dc_cache()
-                        existing_dc = self._find_dc_by_name(current_value)
+                        existing_dc = self._find_dc_by_name(safe_dc_name)
 
                         if existing_dc:
                             dc_id = existing_dc.get('id')
@@ -1883,8 +1933,8 @@ class ZendeskController:
         progress_signal,
         log_signal,
         filepath: str
-    ) -> List[Dict[str, Any]]:
-        """Load backup file in a thread."""
+    ) -> Dict[str, Any]:
+        """Load backup file in a thread. Returns {'timestamp':..., 'items':[...]}."""
         log_signal.emit(f"Loading backup: {filepath}")
 
         try:
@@ -1893,7 +1943,7 @@ class ZendeskController:
 
             items = data.get('items', [])
             log_signal.emit(f"Loaded {len(items)} items from backup")
-            return items
+            return {'timestamp': data.get('timestamp', ''), 'items': items}
 
         except Exception as e:
             logger.error(f"Error loading backup: {e}")
@@ -1959,6 +2009,7 @@ class ZendeskController:
         token: str,
         backup_path: str,
         google_api_key: str = "",
+        deepl_api_key: str = "",
         protect_acronyms: bool = True,
         cache_expiry_days: int = 30
     ) -> bool:
@@ -1970,6 +2021,7 @@ class ZendeskController:
                 'token': token,
                 'backup_path': backup_path,
                 'google_api_key': google_api_key,
+                'deepl_api_key': deepl_api_key,
                 'protect_acronyms': protect_acronyms,
                 'cache_expiry_days': cache_expiry_days
             }

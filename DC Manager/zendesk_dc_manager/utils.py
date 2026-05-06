@@ -15,6 +15,7 @@ import unicodedata
 from typing import Dict, List, Tuple, Set, Optional
 
 from zendesk_dc_manager.config import (
+    logger,
     COMMON_SHORT_WORDS,
     TRANSLATABLE_SHORT_WORDS,
 )
@@ -420,18 +421,23 @@ class AcronymProtector:
         return result
 
     @staticmethod
-    def restore(translated_text: str, acronym_map: Dict[str, str]) -> str:
-        """Restore acronyms in translated text."""
+    def restore(translated_text: str, acronym_map: Dict[str, str]) -> Tuple[str, bool]:
+        """
+        Restore acronyms in translated text.
+        Returns (restored_text, placeholder_lost) where placeholder_lost=True
+        means at least one placeholder was not found and the acronym is missing.
+        """
         if not translated_text:
-            return ""
+            return "", False
 
         if not acronym_map:
-            return translated_text
+            return translated_text, False
 
         if "__SKIP__" in acronym_map:
-            return acronym_map["__SKIP__"]
+            return acronym_map["__SKIP__"], False
 
         result = translated_text
+        placeholder_lost = False
 
         sorted_items = sorted(
             acronym_map.items(),
@@ -449,65 +455,42 @@ class AcronymProtector:
                 result = pattern.sub(acronym, result)
                 continue
 
-            result = AcronymProtector._restore_corrupted(
-                result, placeholder, acronym
+            # Placeholder not found — acronym will be missing in translation
+            placeholder_lost = True
+            logger.debug(
+                f"Placeholder '{placeholder}' lost during translation; "
+                f"acronym '{acronym}' missing from result"
             )
 
-        return result
-
-    @staticmethod
-    def _restore_corrupted(text: str, placeholder: str, acronym: str) -> str:
-        """Attempt to restore corrupted placeholder."""
-        substitutions = [
-            ('Z', 'S'), ('z', 's'), ('Z', 'C'), ('z', 'c'),
-            ('x', 's'), ('x', 'j'), ('q', 'g'), ('q', 'c'),
-            ('v', 'b'), ('v', 'w'),
-        ]
-
-        for old_char, new_char in substitutions:
-            modified = placeholder.replace(old_char, new_char)
-            if modified.lower() in text.lower():
-                pattern = re.compile(re.escape(modified), re.IGNORECASE)
-                return pattern.sub(acronym, text)
-
-        if len(placeholder) >= 6:
-            for length in range(len(placeholder), 4, -1):
-                partial = placeholder[:length]
-                if partial.lower() in text.lower():
-                    idx = text.lower().find(partial.lower())
-                    if idx != -1:
-                        end_idx = idx + len(partial)
-                        while end_idx < len(text) and (
-                            text[end_idx].isalnum() or text[end_idx] in '._'
-                        ):
-                            end_idx += 1
-                        return text[:idx] + acronym + text[end_idx:]
-
-        return text
+        return result, placeholder_lost
 
     @staticmethod
     def verify_and_fix(
         original: str,
         translated: str,
         acronym_map: Dict[str, str]
-    ) -> Tuple[str, List[str]]:
-        """Verify translation and fix any issues with acronyms."""
-        issues: List[str] = []
-
+    ) -> Tuple[str, bool]:
+        """
+        Verify translation integrity.
+        Returns (text, needs_attention) where needs_attention=True means
+        at least one expected acronym is missing — item requires human review.
+        Cleans up any stray placeholder artifacts but does NOT attempt
+        to guess or reconstruct lost acronyms.
+        """
         if not original or not translated:
-            return translated or "", issues
+            return translated or "", False
 
         if acronym_map and "__SKIP__" in acronym_map:
             original_value = acronym_map["__SKIP__"]
             if translated.strip() != original_value:
-                issues.append("Short text modified - restoring original")
-                return original_value, issues
-            return translated, issues
+                return original_value, False
+            return translated, False
 
         if not acronym_map:
-            return translated, issues
+            return translated, False
 
         fixed = translated
+        needs_attention = False
 
         expected_acronyms = {
             v for k, v in acronym_map.items() if k != "__SKIP__"
@@ -515,27 +498,18 @@ class AcronymProtector:
 
         for acronym in expected_acronyms:
             try:
-                if re.search(r'\b' + re.escape(acronym) + r'\b', fixed):
-                    continue
+                present = bool(re.search(r'\b' + re.escape(acronym) + r'\b', fixed))
             except re.error:
-                if acronym in fixed:
-                    continue
+                present = acronym in fixed
 
-            issues.append(f"Acronym '{acronym}' was restored")
-
-            placeholder = None
-            for ph, acr in acronym_map.items():
-                if acr == acronym and ph != "__SKIP__":
-                    placeholder = ph
-                    break
-
-            if placeholder:
-                fixed = AcronymProtector._restore_corrupted(
-                    fixed, placeholder, acronym
+            if not present:
+                needs_attention = True
+                logger.debug(
+                    f"Acronym '{acronym}' missing from translation — "
+                    f"marking for human review"
                 )
 
         if AcronymProtector.has_placeholders(fixed):
-            issues.append("Cleaning up remaining placeholder artifacts")
             fixed = AcronymProtector.cleanup_placeholders(fixed)
 
-        return fixed, issues
+        return fixed, needs_attention
