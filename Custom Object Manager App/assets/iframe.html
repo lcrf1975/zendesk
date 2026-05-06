@@ -43,6 +43,7 @@
           <button id="btn-reverse-lookup" class="btn btn-purple" data-i18n="table.reverseLookup">Reverse Lookup</button>
           <button id="btn-find-duplicates" class="btn btn-teal" data-i18n="table.findDuplicates">Find Duplicates</button>
           <button id="btn-export-csv" class="btn btn-secondary" data-i18n="table.exportCsv">Export CSV</button>
+          <button id="btn-refresh" class="btn btn-brown" data-i18n="table.refresh">Refresh</button>
           <button id="btn-back-selector" class="btn btn-orange" data-i18n="table.changeObject">Change Object</button>
         </div>
       </div>
@@ -84,6 +85,34 @@
     <div id="form-view" style="display: none;"></div>
   </div>
   
+  <!-- SHA256 Calculator Modal -->
+  <div id="sha256-modal-overlay" style="display: none;">
+    <div id="sha256-modal">
+      <h3 data-i18n="sha256.title">SHA256 Calculator</h3>
+      <div class="sha256-field-row">
+        <div class="sha256-field">
+          <label data-i18n="sha256.inputLabel">Input</label>
+          <div class="sha256-input-wrap">
+            <textarea id="sha256-input" rows="3" data-i18n-placeholder="sha256.inputPlaceholder"></textarea>
+            <button type="button" id="sha256-copy-input" class="sha256-icon-btn" title="Copy input">⧉</button>
+          </div>
+        </div>
+        <div class="sha256-field">
+          <label data-i18n="sha256.outputLabel">SHA256</label>
+          <div class="sha256-input-wrap">
+            <input type="text" id="sha256-output" readonly />
+            <button type="button" id="sha256-copy-output" class="sha256-icon-btn" title="Copy SHA256">⧉</button>
+          </div>
+          <span id="sha256-suffix-note" class="sha256-suffix-note" style="display:none;"></span>
+        </div>
+      </div>
+      <div id="sha256-modal-actions">
+        <button type="button" id="sha256-close" class="btn btn-secondary" data-i18n="form.cancel">Cancel</button>
+        <button type="button" id="sha256-apply" class="btn" data-i18n="sha256.applyBtn">Apply to External ID</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Export CSV Modal -->
   <div id="export-modal-overlay" style="display: none;">
     <div id="export-modal">

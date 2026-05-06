@@ -118,12 +118,22 @@ input[type="checkbox"] {
   background-color: #016969;
 }
 
+.btn-brown {
+  background-color: #795548;
+  color: white;
+}
+
+.btn-brown:hover {
+  background-color: #5d4037;
+}
+
 /* Consistent disabled state for every button variant */
 .btn:disabled,
 .btn-secondary:disabled,
 .btn-orange:disabled,
 .btn-purple:disabled,
-.btn-teal:disabled {
+.btn-teal:disabled,
+.btn-brown:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -145,9 +155,9 @@ input[type="checkbox"] {
   background: white;
   border-radius: 8px;
   padding: 24px;
-  max-width: 960px;
+  max-width: 1104px;
   width: 100%;
-  max-height: 85vh;
+  max-height: 95vh;
   display: flex;
   flex-direction: column;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
@@ -246,9 +256,9 @@ mark.fd-diff {
   background: white;
   border-radius: 8px;
   padding: 24px;
-  max-width: 960px;
+  max-width: 1056px;
   width: 100%;
-  max-height: 90vh;
+  max-height: 95vh;
   display: flex;
   flex-direction: column;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
@@ -403,6 +413,21 @@ mark.fd-diff {
 }
 .record-summary strong {
   color: #2f3941;
+}
+.summary-stop-btn {
+  margin-left: 8px;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #cc3340;
+  background: transparent;
+  border: 1px solid #cc3340;
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.summary-stop-btn:hover {
+  background: #fff0ee;
 }
 
 /* Form Actions Top */
@@ -960,6 +985,141 @@ mark.fd-diff {
   margin-left: 6px;
   vertical-align: middle;
   line-height: 1.6;
+}
+
+/* SHA256 Calculator Modal */
+#sha256-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(47, 57, 65, 0.6);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#sha256-modal {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px 24px 18px;
+  width: 480px;
+  max-width: 95vw;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+}
+#sha256-modal h3 {
+  margin: 0 0 16px 0;
+  font-size: 16px;
+  color: #2f3941;
+}
+.sha256-field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.sha256-field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #68737d;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.sha256-input-wrap {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+.sha256-input-wrap textarea,
+.sha256-input-wrap input[type="text"] {
+  flex: 1;
+  font-size: 13px;
+  font-family: monospace;
+  border: 1px solid #d8dcde;
+  border-radius: 4px;
+  padding: 7px 9px;
+  resize: vertical;
+  line-height: 1.45;
+  color: #2f3941;
+}
+.sha256-input-wrap textarea:focus,
+.sha256-input-wrap input[type="text"]:focus {
+  outline: none;
+  border-color: #1f73b7;
+  box-shadow: 0 0 0 2px rgba(31,115,183,0.2);
+}
+.sha256-input-wrap input[type="text"][readonly] {
+  background: #f8f9fa;
+  color: #49545c;
+  cursor: default;
+}
+.sha256-icon-btn {
+  flex-shrink: 0;
+  background: #f3f4f5;
+  border: 1px solid #d8dcde;
+  border-radius: 4px;
+  padding: 6px 9px;
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  color: #49545c;
+  transition: background 0.15s;
+  margin-top: 1px;
+}
+.sha256-icon-btn:hover {
+  background: #e0e3e6;
+}
+.sha256-suffix-note {
+  display: block;
+  margin-top: 5px;
+  font-size: 12px;
+  color: #b46b00;
+  background: #fff7ed;
+  border-radius: 3px;
+  padding: 3px 7px;
+}
+#sha256-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+/* Label + small action button side by side */
+.form-label-with-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.label-action-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #1f73b7;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+.label-action-btn:hover {
+  color: #144f80;
+}
+/* Global SHA256 button in form-actions-top: override link style with pill style */
+.sha256-global-btn {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  padding: 5px 10px;
+  border: 1px solid #d8dcde !important;
+  border-radius: 4px;
+  color: #1f73b7 !important;
+  background: #f3f4f5 !important;
+}
+.sha256-global-btn:hover {
+  background: #e0e3e6 !important;
+  color: #144f80 !important;
 }
 
 /* Export CSV Modal */

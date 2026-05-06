@@ -14,6 +14,26 @@ import {
 const client = ZAFClient.init();
 
 // ============================================================
+// SHA256 / EXTERNAL ID HELPERS
+// ============================================================
+function fixMojibake(s) {
+  s = s.replace(/Ã /g, "à");
+  try {
+    const bytes = new Uint8Array([...s].map(c => c.charCodeAt(0)));
+    return new TextDecoder("utf-8").decode(bytes);
+  } catch { return s; }
+}
+async function computeExternalId(newName, originalExternalId) {
+  const clean = fixMojibake(newName);
+  const encoded = new TextEncoder().encode(clean);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", encoded);
+  const sha = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, "0")).join("");
+  const parts = (originalExternalId || "").split("_");
+  if (parts.length === 2 && /^\d+$/.test(parts[1])) return `${sha}_${parts[1]}`;
+  return sha;
+}
+
+// ============================================================
 // ZAF REQUEST WRAPPER WITH 429/503 RETRY + BACKOFF
 // ============================================================
 // Zendesk rate limits to ~700 req/min per agent. Large Reverse Lookup scans or
@@ -59,6 +79,10 @@ let filterColumns = [];        // Columns available for filtering (set per table
 let lastFilterCoKey = null;    // Tracks which CO the filter bar was built for
 let currentLoadToken = null;   // Cancels stale background page loads when CO changes
 let isBackgroundLoading = false;
+// Set to true when the user clicks "Stop loading" in the summary bar. Distinct
+// from currentLoadToken invalidation (which happens on CO switch) because Stop
+// must keep what was already fetched and re-enable the toolbar.
+let _bgLoadStopped = false;
 let zendeskBaseUrl = '';       // Zendesk base URL for constructing item links
 let formIsDirty = false;       // Tracks unsaved changes in the active form
 let rowNumMap = null;          // id -> consecutive # built from dataFiltered/dataSorted rows
@@ -135,6 +159,19 @@ const bootApp = async () => {
     if (selected.length > 0) showBulkDeleteModal(selected);
   });
   document.getElementById('btn-back-selector').addEventListener('click', startApp);
+  document.getElementById('btn-refresh').addEventListener('click', async () => {
+    if (!currentCoKey || isBackgroundLoading) return;
+    // If a form is open with unsaved edits, confirm discard before reload wipes them.
+    if (formIsDirty) {
+      const leave = await showUnsavedChangesModal();
+      if (!leave) return;
+      formIsDirty = false;
+    }
+    // Invalidate cached lookup schema so Usage & Impact picks up any new fields.
+    cachedLookupFields = null;
+    loadTable(currentCoKey);
+  });
+  document.getElementById('btn-refresh').title = t('table.refresh');
   
   // Tabulator Global Search (now delegates to unified filter).
   // Debounced so we don't re-run the filter predicate on every keystroke — noticeable
@@ -260,6 +297,21 @@ const bootApp = async () => {
       return;
     }
 
+  });
+
+  // Live-resize: browser window or Zendesk workspace pane resize should recompute
+  // iframe height and redraw Tabulator so columns refit the new width. Debounced
+  // to collapse the 60+ resize events browsers fire per drag into one update.
+  let _winResizeTimer = null;
+  window.addEventListener('resize', () => {
+    if (_winResizeTimer) clearTimeout(_winResizeTimer);
+    _winResizeTimer = setTimeout(() => {
+      _winResizeTimer = null;
+      resizeIframe();
+      if (tabulatorTable && views.table.style.display !== 'none') {
+        tabulatorTable.redraw(true);
+      }
+    }, CONFIG.RESIZE_DEBOUNCE_MS);
   });
 };
 
@@ -433,6 +485,11 @@ function setLoadingUIState(loading) {
     findDupBtn.disabled = loading;
     findDupBtn.title = loading ? t('export.loadingWarning') : '';
   }
+  const refreshBtn = document.getElementById('btn-refresh');
+  if (refreshBtn) {
+    refreshBtn.disabled = loading;
+    refreshBtn.title = loading ? t('export.loadingWarning') : t('table.refresh');
+  }
 }
 
 async function startApp() {
@@ -537,10 +594,12 @@ async function loadTable(coKey) {
     const myToken = Symbol();
     currentLoadToken = myToken;
     isBackgroundLoading = false;
+    _bgLoadStopped = false;
     rowNumMap = null;
 
-    const schemaResponse = await zafRequest(`/api/v2/custom_objects/${coKey}/fields`);
-    currentSchema = schemaResponse.custom_object_fields;
+    // Paginate schema: CO field endpoint returns 100/page by default — without
+    // fetchAllPages, objects with more than 100 fields would silently drop the rest.
+    currentSchema = await fetchAllPages(`/api/v2/custom_objects/${coKey}/fields`, 'custom_object_fields');
 
     updateLoaderText(t('loader.records'), { skeleton: true });
     const firstResponse = await zafRequest(`/api/v2/custom_objects/${coKey}/records?page[size]=${CONFIG.CO_RECORDS_PAGE_SIZE}`);
@@ -551,6 +610,7 @@ async function loadTable(coKey) {
     const tableData = firstPageRecords.map(record => ({
       id: record.id,
       name: record.name,
+      external_id: record.external_id,
       ...record.custom_object_fields
     }));
 
@@ -575,8 +635,7 @@ async function loadTable(coKey) {
         width: 36,
         minWidth: 36,
         maxWidth: 36,
-        resizable: false,
-        cellClick: function(e, cell) { cell.getRow().toggleSelect(); }
+        resizable: false
       },
       {
         title: "#",
@@ -592,7 +651,8 @@ async function loadTable(coKey) {
         }
       },
       { title: t('col.id'), field: "id", width: 80, minWidth: 80, hozAlign: "center", headerHozAlign: "center" },
-      { title: t('col.name'), field: "name", minWidth: CONFIG.DEFAULT_COL_WIDTH }
+      { title: t('col.name'), field: "name", minWidth: CONFIG.DEFAULT_COL_WIDTH },
+      { title: t('col.externalId'), field: "external_id", width: 140, minWidth: 100 }
     ];
 
     currentSchema.forEach((field) => {
@@ -677,8 +737,12 @@ async function loadTable(coKey) {
     }
 
     if(tabulatorTable) {
-      tabulatorTable.destroy(); 
+      tabulatorTable.destroy();
     }
+    // destroy() does not clear externally-mounted pagination elements — wipe manually
+    // to prevent duplicate pagination controls when loading a second CO.
+    const paginationBar = document.getElementById('table-pagination-bar');
+    if (paginationBar) paginationBar.innerHTML = '';
 
     const savedPageSize = savedPrefs?.pageSize && CONFIG.TABLE_PAGINATION_SIZES.includes(savedPrefs.pageSize)
       ? savedPrefs.pageSize
@@ -692,8 +756,7 @@ async function loadTable(coKey) {
       paginationSizeSelector: CONFIG.TABLE_PAGINATION_SIZES,
       paginationElement: document.getElementById("table-pagination-bar"),
       renderHorizontal: "virtual",    // virtualize wide column sets (many CO fields)
-      selectable: true,               // enable multi-row selection (bulk delete)
-      selectableRangeMode: "click",   // click-to-toggle, shift+click for range
+      selectable: true,               // multi-row selection; click = toggle, shift+click = range
       locale: true,
       langs: {
         "default": {
@@ -850,8 +913,15 @@ async function loadRemainingPages(nextUrl, token) {
     const summaryEl = document.getElementById('record-summary');
     if (!summaryEl || !tabulatorTable) return;
     const fetched = tabulatorTable.getData().length + allRemainingRows.length;
-    summaryEl.innerHTML = `<strong>${fetched}</strong> ${t('summary.records')} <span style="color:#1f73b7; font-size:12px; font-weight:600;">${t('summary.loadingMore')}</span> <span style="color:#68737d; font-size:12px;">· ${formatElapsed(loadElapsed())}</span>`;
+    summaryEl.innerHTML = `<strong>${fetched}</strong> ${t('summary.records')} <span style="color:#1f73b7; font-size:12px; font-weight:600;">${t('summary.loadingMore')}</span> <span style="color:#68737d; font-size:12px;">· ${formatElapsed(loadElapsed())}</span> <button type="button" id="btn-stop-bg-load" class="summary-stop-btn">${t('summary.stopLoading')}</button>`;
   };
+
+  // Delegated click: button is re-rendered each tick, so a direct listener would detach.
+  const summaryEl = document.getElementById('record-summary');
+  const onStopClick = (e) => {
+    if (e.target && e.target.id === 'btn-stop-bg-load') _bgLoadStopped = true;
+  };
+  if (summaryEl) summaryEl.addEventListener('click', onStopClick);
 
   // Tick every second so the elapsed counter updates even between page fetches
   const timerInterval = setInterval(() => {
@@ -863,12 +933,14 @@ async function loadRemainingPages(nextUrl, token) {
 
   while (currentEndpoint) {
     if (currentLoadToken !== token) return;
+    if (_bgLoadStopped) break;
     try {
       const response = await zafRequest(currentEndpoint);
       if (currentLoadToken !== token) return;
+      if (_bgLoadStopped) break;
 
       (response.custom_object_records || []).forEach(record => {
-        allRemainingRows.push({ id: record.id, name: record.name, ...record.custom_object_fields });
+        allRemainingRows.push({ id: record.id, name: record.name, external_id: record.external_id, ...record.custom_object_fields });
       });
 
       renderLoadingSummary();
@@ -890,6 +962,7 @@ async function loadRemainingPages(nextUrl, token) {
   }
 
   if (currentLoadToken !== token) return;
+  const wasStopped = _bgLoadStopped;
   isBackgroundLoading = false;
   setLoadingUIState(false);
 
@@ -904,9 +977,11 @@ async function loadRemainingPages(nextUrl, token) {
   }
 
   updateRecordSummary();
+  if (wasStopped) showToast(t('toast.bgLoadStopped'), 'warning');
 
   } finally {
     clearInterval(timerInterval);
+    if (summaryEl) summaryEl.removeEventListener('click', onStopClick);
   }
 }
 
@@ -1194,6 +1269,67 @@ async function deleteRecord(recordId, recordName) {
 }
 
 // ----------------------------------------------------
+// SHA256 MODAL
+// ----------------------------------------------------
+const SHA256_PATTERN = /^[0-9a-f]{64}(_\d+)?$/;
+
+// targetFieldName: the form field [name] to apply the result to.
+// Pass null to open in global mode (copy-only, no Apply button).
+function openSha256Modal(currentFieldValue, targetFieldName) {
+  const overlay = document.getElementById('sha256-modal-overlay');
+  const inputEl = document.getElementById('sha256-input');
+  const outputEl = document.getElementById('sha256-output');
+  const suffixNote = document.getElementById('sha256-suffix-note');
+  const applyBtn = document.getElementById('sha256-apply');
+
+  inputEl.value = '';
+  outputEl.value = '';
+
+  const parts = (currentFieldValue || '').split('_');
+  const hasSuffix = parts.length === 2 && /^\d+$/.test(parts[1]);
+  suffixNote.textContent = hasSuffix ? t('sha256.suffixNote', { suffix: parts[1] }) : '';
+  suffixNote.style.display = hasSuffix ? 'block' : 'none';
+
+  // Show Apply only when wired to a specific field
+  applyBtn.style.display = targetFieldName ? '' : 'none';
+
+  overlay.style.display = 'flex';
+  inputEl.focus();
+
+  async function recalculate() {
+    const val = inputEl.value;
+    if (!val.trim()) { outputEl.value = ''; return; }
+    outputEl.value = await computeExternalId(val, currentFieldValue);
+  }
+
+  inputEl.oninput = recalculate;
+
+  document.getElementById('sha256-copy-input').onclick = () => {
+    if (!inputEl.value) return;
+    navigator.clipboard.writeText(inputEl.value).then(() => showToast(t('sha256.copied'), 'success'));
+  };
+
+  document.getElementById('sha256-copy-output').onclick = () => {
+    if (!outputEl.value) return;
+    navigator.clipboard.writeText(outputEl.value).then(() => showToast(t('sha256.copied'), 'success'));
+  };
+
+  applyBtn.onclick = () => {
+    if (!outputEl.value || !targetFieldName) return;
+    const target = document.querySelector(`[name="${targetFieldName}"]`);
+    if (target) {
+      target.value = outputEl.value;
+      formIsDirty = true;
+    }
+    overlay.style.display = 'none';
+    showToast(t('sha256.applied'), 'success');
+  };
+
+  document.getElementById('sha256-close').onclick = () => { overlay.style.display = 'none'; };
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.style.display = 'none'; };
+}
+
+// ----------------------------------------------------
 // VIEW 3: DYNAMIC FORM & RELATED RECORDS TAB
 // ----------------------------------------------------
 async function showForm(existingRecord = null, initialTab = 'details') {
@@ -1224,18 +1360,28 @@ async function showForm(existingRecord = null, initialTab = 'details') {
       `;
     }
 
+    const extVal = isEdit && existingRecord.external_id ? existingRecord.external_id : '';
     formHtml += `<div id="tab-content-details">
                    <form id="dynamic-form">
                      <input type="hidden" name="record_id" value="${isEdit ? escapeHtml(existingRecord.id) : ''}" />
-                     
+
                      <div class="form-actions-top">
                        <button type="submit" class="btn">${isEdit ? t('form.updateButton') : t('form.saveButton')}</button>
                        <button type="button" class="btn btn-secondary" id="btn-cancel-form">${t('form.cancel')}</button>
+                       <button type="button" class="btn btn-secondary label-action-btn sha256-global-btn" id="btn-sha256-global" title="${t('sha256.tooltip')}">${t('sha256.trigger')}</button>
                      </div>
 
                      <div class="form-group">
                        <label>${t('form.recordName')}</label>
                        <input type="text" name="name" value="${escapeHtml(existingName)}" required />
+                     </div>
+
+                     <div class="form-group">
+                       <label class="form-label-with-action">
+                         ${t('form.externalId')}
+                         ${SHA256_PATTERN.test(extVal) ? `<button type="button" class="label-action-btn sha256-field-btn" data-field="external_id" title="${t('sha256.tooltip')}">${t('sha256.trigger')}</button>` : ''}
+                       </label>
+                       <input type="text" name="external_id" value="${escapeHtml(extVal)}" />
                      </div>`;
 
     const lookupFieldIds = [];
@@ -1259,7 +1405,11 @@ async function showForm(existingRecord = null, initialTab = 'details') {
       formHtml += `<div class="form-group">`;
 
       if (field.type === 'text') {
-        formHtml += `<label>${escapeHtml(field.title)}</label>
+        const showSha = SHA256_PATTERN.test(String(fieldValue));
+        formHtml += `<label class="form-label-with-action">
+                       ${escapeHtml(field.title)}
+                       ${showSha ? `<button type="button" class="label-action-btn sha256-field-btn" data-field="${escapeHtml(field.key)}" title="${t('sha256.tooltip')}">${t('sha256.trigger')}</button>` : ''}
+                     </label>
                      <input type="text" name="${escapeHtml(field.key)}" value="${escapeHtml(fieldValue)}" ${field.required ? 'required' : ''} />`;
       }
       else if (field.type === 'textarea') {
@@ -1369,6 +1519,20 @@ async function showForm(existingRecord = null, initialTab = 'details') {
       switchView('table');
     });
     document.getElementById('dynamic-form').addEventListener('submit', handleFormSubmit);
+
+    // Global SHA256 button — no target field, copy-only mode
+    document.getElementById('btn-sha256-global').addEventListener('click', () => {
+      openSha256Modal('', null);
+    });
+
+    // Inline SHA256 buttons on specific fields (auto-detected by value pattern)
+    document.querySelectorAll('.sha256-field-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const fieldName = btn.dataset.field;
+        const currentVal = document.querySelector(`[name="${fieldName}"]`)?.value || '';
+        openSha256Modal(currentVal, fieldName);
+      });
+    });
 
     if (isEdit) {
       document.getElementById('tab-details').addEventListener('click', () => {
@@ -1636,6 +1800,17 @@ function buildPossibleRulesHtml(ruleResults) {
   };
 }
 
+// Maps a Zendesk relationship field type to its payload array key and the
+// property holding a display label. Single source of truth for all code paths
+// that read /relationship_fields/{id}/{type} responses.
+function getRelationshipDataKey(fieldType) {
+  if (fieldType === 'zen:ticket')                      return { dataKey: 'tickets',              displayField: 'subject' };
+  if (fieldType === 'zen:user')                        return { dataKey: 'users',                displayField: 'name'    };
+  if (fieldType === 'zen:organization')                return { dataKey: 'organizations',        displayField: 'name'    };
+  if (fieldType && fieldType.startsWith('zen:custom_object:')) return { dataKey: 'custom_object_records', displayField: 'name' };
+  return { dataKey: '', displayField: 'name' };
+}
+
 // Returns a Zendesk URL for a related data item, or null if not linkable
 function getZendeskItemUrl(type, id) {
   if (!zendeskBaseUrl) return null;
@@ -1701,13 +1876,7 @@ async function fullReferenceScan(recordId, recordName, onProgress) {
         const endpoint = `/api/v2/zen:custom_object:${currentCoKey}/${recordId}/relationship_fields/${field.id}/${field.type}`;
         try {
           const response = await zafRequest(endpoint);
-          let dataKey = '';
-          let displayField = 'name';
-          if (field.type === 'zen:ticket')                    { dataKey = 'tickets';              displayField = 'subject'; }
-          else if (field.type === 'zen:user')                 { dataKey = 'users';                displayField = 'name';    }
-          else if (field.type === 'zen:organization')         { dataKey = 'organizations';        displayField = 'name';    }
-          else if (field.type.startsWith('zen:custom_object:')) { dataKey = 'custom_object_records'; displayField = 'name'; }
-
+          const { dataKey, displayField } = getRelationshipDataKey(field.type);
           const records = response[dataKey] || [];
           if (records.length > 0) {
             totalRelationships += records.length;
@@ -1777,11 +1946,7 @@ async function fullReferenceScan(recordId, recordName, onProgress) {
 // handling Zendesk cursor pagination.  Returns array of numeric/string IDs.
 async function fetchLinkedItemIds(recordId, field) {
   const ids = [];
-  let dataKey = '';
-  if (field.type === 'zen:ticket')                      dataKey = 'tickets';
-  else if (field.type === 'zen:user')                   dataKey = 'users';
-  else if (field.type === 'zen:organization')           dataKey = 'organizations';
-  else if (field.type.startsWith('zen:custom_object:')) dataKey = 'custom_object_records';
+  const { dataKey } = getRelationshipDataKey(field.type);
   if (!dataKey) return ids;
 
   let endpoint = `/api/v2/zen:custom_object:${currentCoKey}/${recordId}/relationship_fields/${field.id}/${field.type}`;
@@ -2073,6 +2238,10 @@ async function handleFormSubmit(event) {
   
   let recordName = formData.get('name') || "New Record";
   let recordId = formData.get('record_id');
+  // external_id is a native top-level field on CO records (not part of the schema).
+  // Empty string must be sent as null so Zendesk clears it instead of storing "".
+  const externalIdRaw = formData.get('external_id');
+  const externalId = (externalIdRaw === null || externalIdRaw === '') ? null : externalIdRaw;
 
   currentSchema.forEach(field => {
     if (field.type === 'checkbox') {
@@ -2089,6 +2258,7 @@ async function handleFormSubmit(event) {
   const payload = {
     custom_object_record: {
       name: recordName,
+      external_id: externalId,
       custom_object_fields: customObjectFields
     }
   };
@@ -2109,7 +2279,7 @@ async function handleFormSubmit(event) {
 
     if (tabulatorTable) {
       const record = result.custom_object_record;
-      const rowData = { id: record.id, name: record.name, ...record.custom_object_fields };
+      const rowData = { id: record.id, name: record.name, external_id: record.external_id, ...record.custom_object_fields };
       if (isEdit) {
         tabulatorTable.updateRow(record.id, rowData);
       } else {
@@ -2482,7 +2652,7 @@ function buildEntitySearchHtml(items, sectionLabel, urlFn, labelFn) {
 }
 
 // for exact record ID matches and optional name-based matches.
-async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, modal, showSelection) {
+async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, wholeWord, modal, showSelection) {
   _rlCancelled = false;
 
   modal.innerHTML = `
@@ -2563,9 +2733,21 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
         const normVals = conds.map(cond =>
           cond.value != null ? normalizeForMatch(String(cond.value)) : ''
         );
+        // When wholeWord is on, a hit at position P requires the char at P-1 and at P+len
+        // to be a non-alphanumeric separator (or out-of-bounds). This blocks false positives
+        // like "PDF" matching inside "uploadPDFdoc".
+        const matchesWord = (haystack, needle) => {
+          const idx = haystack.indexOf(needle);
+          if (idx < 0) return false;
+          if (!wholeWord) return true;
+          const isAlnum = (c) => /[a-z0-9]/i.test(c);
+          const before = idx > 0 ? haystack[idx - 1] : '';
+          const after  = idx + needle.length < haystack.length ? haystack[idx + needle.length] : '';
+          return !isAlnum(before) && !isAlnum(after);
+        };
         normRecords.forEach(nr => {
           if (exactMatchedIds.has(String(nr.record.id))) return; // already exact
-          const matchIdx = normVals.findIndex(v => v.length >= CONFIG.MIN_CHARS_FOR_RULE_MATCH && v.includes(nr.normName));
+          const matchIdx = normVals.findIndex(v => v.length >= CONFIG.MIN_CHARS_FOR_RULE_MATCH && matchesWord(v, nr.normName));
           if (matchIdx >= 0) {
             addResult(nr.record, typeLabel, ruleLabel, ruleId, ruleUrl, true, conds[matchIdx]);
           }
@@ -2636,12 +2818,54 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
     // so a full outage doesn't flood the user with 3 simultaneous warnings.
     const erroredSections = [];
 
+    // Linked records via lookup fields — uses the same relationship_fields endpoint as
+    // Usage & Impact. Deterministic (no fuzzy matching). Surfaces tickets/users/orgs/COs
+    // that reference each record through a lookup field.
+    if (selectedTypes.includes('linkedRecords') && !_rlCancelled) {
+      const lookupFields = await getLookupFieldsForCurrentCo();
+      if (lookupFields.length > 0) {
+        const BATCH = CONFIG.RL_RECORDS_PER_BATCH;
+        let sectionErrored = false;
+        for (let i = 0; i < tableRecords.length && !_rlCancelled; i += BATCH) {
+          const batch = tableRecords.slice(i, i + BATCH);
+          updateStatus(`${t('reverseLookup.linkedRecords')}: ${Math.min(i + BATCH, tableRecords.length)}/${tableRecords.length}`);
+          await Promise.all(batch.map(async record => {
+            for (const field of lookupFields) {
+              if (_rlCancelled) return;
+              const { dataKey, displayField } = getRelationshipDataKey(field.type);
+              if (!dataKey) continue;
+              // Walk pagination: relationships can span many pages for popular records,
+              // and the first page alone would miss results.
+              let endpoint = `/api/v2/zen:custom_object:${currentCoKey}/${record.id}/relationship_fields/${field.id}/${field.type}`;
+              try {
+                while (endpoint && !_rlCancelled) {
+                  const resp = await zafRequest(endpoint);
+                  (resp[dataKey] || []).forEach(item => {
+                    const label = item[displayField] || item.title || `#${item.id}`;
+                    addResult(record, field.label, label, item.id, getZendeskItemUrl(field.type, item.id), false);
+                  });
+                  endpoint = (resp.meta?.has_more && resp.links?.next) ? resp.links.next : null;
+                }
+              } catch (e) { console.warn('[RL] linked records fetch failed for', record.id, field.id, e); sectionErrored = true; }
+            }
+          }));
+        }
+        if (sectionErrored) erroredSections.push(t('reverseLookup.linkedRecords'));
+      }
+    }
+
     // Batched parallel ticket text-field search (custom fields only, not subject/description/comments)
+    // Tracks fields skipped by the RL_MAX_FIELDS_PER_QUERY cap across all 3 text-field sections.
+    const truncatedSections = [];
+
     if (selectedTypes.includes('ticketFields') && !_rlCancelled) {
       const textFieldIds = await getTextTicketFieldIds();
       if (textFieldIds.length > 0) {
         // Cap fields per query to keep the URL within Zendesk's length limit
         const queryFieldIds = textFieldIds.slice(0, CONFIG.RL_MAX_FIELDS_PER_QUERY);
+        if (textFieldIds.length > queryFieldIds.length) {
+          truncatedSections.push({ section: t('reverseLookup.ticketFields'), searched: queryFieldIds.length, total: textFieldIds.length });
+        }
         const BATCH = CONFIG.RL_RECORDS_PER_BATCH;
         let sectionErrored = false;
         for (let i = 0; i < searchable.length && !_rlCancelled; i += BATCH) {
@@ -2677,6 +2901,9 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
       const userFieldKeys = await getTextUserFieldKeys();
       if (userFieldKeys.length > 0) {
         const queryKeys = userFieldKeys.slice(0, CONFIG.RL_MAX_FIELDS_PER_QUERY);
+        if (userFieldKeys.length > queryKeys.length) {
+          truncatedSections.push({ section: t('reverseLookup.userFields'), searched: queryKeys.length, total: userFieldKeys.length });
+        }
         const BATCH = CONFIG.RL_RECORDS_PER_BATCH;
         let sectionErrored = false;
         for (let i = 0; i < searchable.length && !_rlCancelled; i += BATCH) {
@@ -2703,6 +2930,9 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
       const orgFieldKeys = await getTextOrgFieldKeys();
       if (orgFieldKeys.length > 0) {
         const queryKeys = orgFieldKeys.slice(0, CONFIG.RL_MAX_FIELDS_PER_QUERY);
+        if (orgFieldKeys.length > queryKeys.length) {
+          truncatedSections.push({ section: t('reverseLookup.orgFields'), searched: queryKeys.length, total: orgFieldKeys.length });
+        }
         const BATCH = CONFIG.RL_RECORDS_PER_BATCH;
         let sectionErrored = false;
         for (let i = 0; i < searchable.length && !_rlCancelled; i += BATCH) {
@@ -2743,11 +2973,15 @@ async function runReverseLookup(selectedTypes, includeNames, useFilteredOnly, mo
     const stoppedNote = wasStopped
       ? `<p style="font-size:12px; color:#cc3340; margin:0 0 12px 0; padding:6px 10px; background:#fff0ee; border:1px solid #f97583; border-radius:4px;">${t('reverseLookup.stopped')}</p>`
       : '';
+    // Surfaced when RL_MAX_FIELDS_PER_QUERY truncated one or more text-field sections
+    const truncatedNote = truncatedSections.length > 0
+      ? `<p style="font-size:12px; color:#b45309; margin:0 0 12px 0; padding:6px 10px; background:#fffbeb; border:1px solid #f59e0b; border-radius:4px;">${truncatedSections.map(s => t('reverseLookup.truncatedNote', { section: escapeHtml(s.section), searched: s.searched, total: s.total })).join('<br>')}</p>`
+      : '';
 
     modal.innerHTML = `
       <h3 style="margin:0 0 8px 0; font-size:16px;">${t('reverseLookup.title')}</h3>
       <p style="font-size:13px; color:#68737d; margin:0 0 14px 0;">${t('reverseLookup.found', { n: results.size })}</p>
-      ${stoppedNote}${nameMatchNote}
+      ${stoppedNote}${truncatedNote}${nameMatchNote}
       <div id="rl-results-container">${resultsHtml || `<p style="color:#68737d;">${t('reverseLookup.noResults')}</p>`}</div>
       <div class="modal-footer">
         <div class="modal-footer-actions">
@@ -2831,6 +3065,7 @@ function showReverseLookupModal() {
         <label class="lookup-type-label"><input type="checkbox" value="sla" checked> ${t('rules.sla')}</label>
       </div>
       <div style="margin-top:12px; border-top:1px solid #e9ebed; padding-top:12px;">
+        <label class="lookup-type-label"><input type="checkbox" value="linkedRecords" id="rl-include-linked" checked> ${t('reverseLookup.linkedRecords')}</label>
         <label class="lookup-type-label"><input type="checkbox" value="ticketFields" id="rl-include-tickets"> ${t('reverseLookup.ticketFields')}</label>
         <label class="lookup-type-label"><input type="checkbox" value="userFields"   id="rl-include-users">   ${t('reverseLookup.userFields')}</label>
         <label class="lookup-type-label"><input type="checkbox" value="orgFields"    id="rl-include-orgs">    ${t('reverseLookup.orgFields')}</label>
@@ -2840,6 +3075,10 @@ function showReverseLookupModal() {
       <label class="lookup-type-label" style="margin-top:12px; border-top:1px solid #e9ebed; padding-top:12px;">
         <input type="checkbox" id="rl-include-names" checked>
         ${t('reverseLookup.includeNames')}
+      </label>
+      <label class="lookup-type-label" id="rl-whole-word-label" style="margin-left:24px; opacity:0.9;">
+        <input type="checkbox" id="rl-whole-word">
+        ${t('reverseLookup.wholeWord')}
       </label>
       <div class="modal-footer">
         <div class="modal-footer-actions">
@@ -2869,16 +3108,31 @@ function showReverseLookupModal() {
     // Also update the warning when the scope radio changes
     ['rl-scope-all', 'rl-scope-filtered'].forEach(id => document.getElementById(id)?.addEventListener('change', updateTextWarning));
 
+    // wholeWord only makes sense with name match — gray out + uncheck when names disabled
+    const syncWholeWordState = () => {
+      const namesOn = document.getElementById('rl-include-names')?.checked ?? false;
+      const wwInput = document.getElementById('rl-whole-word');
+      const wwLabel = document.getElementById('rl-whole-word-label');
+      if (!wwInput || !wwLabel) return;
+      wwInput.disabled = !namesOn;
+      wwLabel.style.opacity = namesOn ? '0.9' : '0.45';
+      if (!namesOn) wwInput.checked = false;
+    };
+    document.getElementById('rl-include-names')?.addEventListener('change', syncWholeWordState);
+    syncWholeWordState();
+
     document.getElementById('rl-btn-cancel').onclick = () => { overlay.style.display = 'none'; };
     document.getElementById('rl-btn-run').onclick = () => {
       const selectedTypes    = [...modal.querySelectorAll('.lookup-type-grid input:checked')].map(cb => cb.value);
+      if (document.getElementById('rl-include-linked')?.checked)  selectedTypes.push('linkedRecords');
       if (document.getElementById('rl-include-tickets')?.checked) selectedTypes.push('ticketFields');
       if (document.getElementById('rl-include-users')?.checked)   selectedTypes.push('userFields');
       if (document.getElementById('rl-include-orgs')?.checked)    selectedTypes.push('orgFields');
       if (selectedTypes.length === 0) return;
       const includeNames     = document.getElementById('rl-include-names')?.checked ?? true;
+      const wholeWord        = document.getElementById('rl-whole-word')?.checked ?? false;
       const useFilteredOnly  = document.getElementById('rl-scope-filtered')?.checked ?? false;
-      runReverseLookup(selectedTypes, includeNames, useFilteredOnly, modal, showSelection);
+      runReverseLookup(selectedTypes, includeNames, useFilteredOnly, wholeWord, modal, showSelection);
     };
   };
 
